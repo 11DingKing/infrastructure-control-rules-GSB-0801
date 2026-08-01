@@ -53,6 +53,17 @@ object DemoSeed {
             action = Action.RESTRICT,
             effectiveFrom = baseline, effectiveTo = null,
         )
+        // 区域层 v2：2026-08-01T03:30:00Z 发布，仅在 [04:00, 06:00) 生效，阈值上调到 75mm；
+        // 生效区间外版本选择回退到永久有效的 v1。
+        services.rules.publish(
+            ruleId = "region-440800-storm", version = 2, tier = RuleTier.REGION, scopeKey = REGION,
+            facilityType = null,
+            condition = RuleCondition(precipitationMmAtLeast = 75.0),
+            action = Action.RESTRICT,
+            effectiveFrom = Instant.parse("2026-08-01T04:00:00Z").toEpochMilli(),
+            effectiveTo = Instant.parse("2026-08-01T06:00:00Z").toEpochMilli(),
+            publishedAt = Instant.parse("2026-08-01T03:30:00Z").toEpochMilli(),
+        )
         // 设施层：tunnel-17 水深 >= 15cm 即封闭
         services.rules.publish(
             ruleId = "facility-tunnel-17-depth", version = 1, tier = RuleTier.FACILITY, scopeKey = FACILITY_ID,

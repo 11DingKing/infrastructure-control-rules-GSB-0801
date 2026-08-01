@@ -101,6 +101,7 @@ fun Application.configureApi(services: Services) {
                     action = action,
                     effectiveFrom = req.effectiveFrom,
                     effectiveTo = req.effectiveTo,
+                    publishedAt = req.publishedAt,
                 )
                 val status = when (outcome.code) {
                     PublishCode.PUBLISHED -> HttpStatusCode.Created

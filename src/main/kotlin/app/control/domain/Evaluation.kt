@@ -16,7 +16,11 @@ data class Fact(val key: String, val value: String)
 
 @Serializable
 enum class Phase {
-    VERSION_SELECTION, SCOPE_CHECK, WINDOW_CHECK, CONDITION_CHECK, CONFLICT_RESOLUTION, DECISION
+    VERSION_SELECTION, SCOPE_CHECK,
+
+    /** 旧版输出使用；窗口判定现已并入 VERSION_SELECTION，仅为兼容历史持久化结果保留。 */
+    WINDOW_CHECK,
+    CONDITION_CHECK, CONFLICT_RESOLUTION, DECISION
 }
 
 /** 解释链中的一个确定性步骤。 */

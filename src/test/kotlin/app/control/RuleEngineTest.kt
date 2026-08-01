@@ -1,5 +1,6 @@
 package app.control.domain
 
+import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -69,7 +70,8 @@ class RuleEngineTest {
         val expectedRuleId: String?,
         val expectCodes: Set<String> = emptySet(),
         val forbidCodes: Set<String> = emptySet(),
-        val expectRuleCode: Pair<String, String>? = null,
+        /** (ruleId, version, code)：解释链中必须存在指向该规则版本的条目。 */
+        val expectRuleCodes: List<Triple<String, Int, String>> = emptyList(),
         val expectedMatchedRuleIds: List<String>? = null,
     )
 
@@ -110,7 +112,7 @@ class RuleEngineTest {
                     input = fullInput, now = NOW, asOf = NOW,
                     expectedAction = Action.CLOSE, expectedRuleId = "facility-tunnel-17-depth",
                     expectCodes = setOf(EvalCode.EXPIRED.name),
-                    expectRuleCode = "manual-tunnel-17-gale" to EvalCode.EXPIRED.name,
+                    expectRuleCodes = listOf(Triple("manual-tunnel-17-gale", 1, EvalCode.EXPIRED.name)),
                 ),
                 Case(
                     name = "过期前一毫秒：人工规则仍然生效",
@@ -249,8 +251,75 @@ class RuleEngineTest {
                     expectedAction = Action.MONITOR, expectedRuleId = "default-heavy-rain",
                     expectCodes = setOf(EvalCode.SELECTED_SOLE_MATCH.name),
                 ),
-            )
+            ) + regionV2WindowCases()
         }
+
+    /** region-440800-storm v2：03:30 发布，[04:00, 06:00) 生效，阈值 75mm；v1 永久有效，阈值 60mm。 */
+    private fun regionV2WindowCases(): List<Case> {
+        val t0330 = Instant.parse("2026-08-01T03:30:00Z").toEpochMilli()
+        val t0359 = Instant.parse("2026-08-01T03:59:59Z").toEpochMilli()
+        val t0400 = Instant.parse("2026-08-01T04:00:00Z").toEpochMilli()
+        val t0559 = Instant.parse("2026-08-01T05:59:59Z").toEpochMilli()
+        val t0600 = Instant.parse("2026-08-01T06:00:00Z").toEpochMilli()
+
+        val rules = listOf(
+            defaultRule(),
+            rule("region-440800-storm", RuleTier.REGION, "440800", Action.RESTRICT, RuleCondition(precipitationMmAtLeast = 60.0), version = 1),
+            rule(
+                "region-440800-storm", RuleTier.REGION, "440800", Action.RESTRICT, RuleCondition(precipitationMmAtLeast = 75.0),
+                version = 2, effectiveFrom = t0400, effectiveTo = t0600, publishedAt = t0330,
+            ),
+            rule("facility-tunnel-17-depth", RuleTier.FACILITY, "tunnel-17", Action.CLOSE, RuleCondition(waterDepthCmAtLeast = 15.0)),
+            rule("manual-tunnel-17-typhoon", RuleTier.MANUAL, "tunnel-17", Action.CLOSE, RuleCondition(windLevelAtLeast = 8)),
+        )
+        val chain = "region-440800-storm"
+
+        return listOf(
+            Case(
+                name = "v2 尚未生效（03:59:59Z）：版本选择回退到永久有效的 v1",
+                rules = rules, input = fullInput, now = t0359, asOf = t0359,
+                expectedAction = Action.CLOSE, expectedRuleId = "facility-tunnel-17-depth",
+                expectRuleCodes = listOf(
+                    Triple(chain, 1, EvalCode.SELECTED_EFFECTIVE_VERSION.name),
+                    Triple(chain, 1, EvalCode.MATCHED.name),
+                    Triple(chain, 2, EvalCode.NOT_YET_EFFECTIVE.name),
+                ),
+                expectedMatchedRuleIds = listOf("facility-tunnel-17-depth", "region-440800-storm", "default-heavy-rain"),
+            ),
+            Case(
+                name = "v2 生效起点（04:00:00Z）：选择 v2，72mm 低于 75mm 阈值未命中",
+                rules = rules, input = fullInput, now = t0400, asOf = t0400,
+                expectedAction = Action.CLOSE, expectedRuleId = "facility-tunnel-17-depth",
+                expectRuleCodes = listOf(
+                    Triple(chain, 2, EvalCode.SELECTED_EFFECTIVE_VERSION.name),
+                    Triple(chain, 2, EvalCode.BELOW_THRESHOLD.name),
+                    Triple(chain, 1, EvalCode.SUPERSEDED_BY_NEWER_VERSION.name),
+                ),
+                expectedMatchedRuleIds = listOf("facility-tunnel-17-depth", "default-heavy-rain"),
+            ),
+            Case(
+                name = "v2 生效区间内（05:59:59Z）：仍选择 v2 且阈值未命中",
+                rules = rules, input = fullInput, now = t0559, asOf = t0559,
+                expectedAction = Action.CLOSE, expectedRuleId = "facility-tunnel-17-depth",
+                expectRuleCodes = listOf(
+                    Triple(chain, 2, EvalCode.SELECTED_EFFECTIVE_VERSION.name),
+                    Triple(chain, 2, EvalCode.BELOW_THRESHOLD.name),
+                ),
+                expectedMatchedRuleIds = listOf("facility-tunnel-17-depth", "default-heavy-rain"),
+            ),
+            Case(
+                name = "v2 恰好过期（06:00:00Z）：版本选择回退到永久有效的 v1",
+                rules = rules, input = fullInput, now = t0600, asOf = t0600,
+                expectedAction = Action.CLOSE, expectedRuleId = "facility-tunnel-17-depth",
+                expectRuleCodes = listOf(
+                    Triple(chain, 1, EvalCode.SELECTED_EFFECTIVE_VERSION.name),
+                    Triple(chain, 1, EvalCode.MATCHED.name),
+                    Triple(chain, 2, EvalCode.EXPIRED.name),
+                ),
+                expectedMatchedRuleIds = listOf("facility-tunnel-17-depth", "region-440800-storm", "default-heavy-rain"),
+            ),
+        )
+    }
 
     @TestFactory
     fun `四层规则排列组合的求值表`(): List<DynamicTest> =
@@ -267,10 +336,10 @@ class RuleEngineTest {
                 for (code in case.forbidCodes) {
                     assertFalse(code in codes, "explanation must not contain $code")
                 }
-                case.expectRuleCode?.let { (ruleId, code) ->
+                for ((ruleId, version, code) in case.expectRuleCodes) {
                     assertTrue(
-                        result.explanation.any { it.rule?.ruleId == ruleId && it.code == code },
-                        "explanation missing entry $code for rule $ruleId",
+                        result.explanation.any { it.rule?.ruleId == ruleId && it.rule?.version == version && it.code == code },
+                        "explanation missing entry $code for rule $ruleId@$version",
                     )
                 }
                 case.expectedMatchedRuleIds?.let { expected ->
@@ -310,5 +379,33 @@ class RuleEngineTest {
         assertContentEquals(Canonical.bytesOf(first), Canonical.bytesOf(reordered))
         assertContentEquals(Canonical.bytesOf(first), Canonical.bytesOf(shuffled))
         assertEquals(Canonical.hashOf(first), Canonical.hashOf(shuffled))
+    }
+
+    @Test
+    fun `窗口化 v2 场景乱序传入仍字节级一致`() {
+        val t0330 = Instant.parse("2026-08-01T03:30:00Z").toEpochMilli()
+        val t0400 = Instant.parse("2026-08-01T04:00:00Z").toEpochMilli()
+        val t0600 = Instant.parse("2026-08-01T06:00:00Z").toEpochMilli()
+        val rules = listOf(
+            defaultRule(),
+            rule("region-440800-storm", RuleTier.REGION, "440800", Action.RESTRICT, RuleCondition(precipitationMmAtLeast = 60.0), version = 1),
+            rule(
+                "region-440800-storm", RuleTier.REGION, "440800", Action.RESTRICT, RuleCondition(precipitationMmAtLeast = 75.0),
+                version = 2, effectiveFrom = t0400, effectiveTo = t0600, publishedAt = t0330,
+            ),
+            rule("facility-tunnel-17-depth", RuleTier.FACILITY, "tunnel-17", Action.CLOSE, RuleCondition(waterDepthCmAtLeast = 15.0)),
+            rule("manual-tunnel-17-typhoon", RuleTier.MANUAL, "tunnel-17", Action.CLOSE, RuleCondition(windLevelAtLeast = 8)),
+        )
+        val baseline = RuleEngine.evaluate(facility, rules, fullInput, t0400, t0400)
+        for (seed in 1..20) {
+            val permuted = RuleEngine.evaluate(
+                facility, rules.shuffled(kotlin.random.Random(seed)), fullInput, t0400, t0400,
+            )
+            assertContentEquals(
+                Canonical.bytesOf(baseline), Canonical.bytesOf(permuted),
+                "shuffled with seed $seed must be byte-identical",
+            )
+            assertEquals(Canonical.hashOf(baseline), Canonical.hashOf(permuted))
+        }
     }
 }

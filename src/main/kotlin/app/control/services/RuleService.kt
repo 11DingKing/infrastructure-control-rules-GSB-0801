@@ -38,6 +38,7 @@ class RuleService(
         action: Action,
         effectiveFrom: Long,
         effectiveTo: Long?,
+        publishedAt: Long? = null,
     ): PublishOutcome {
         if (ruleId.isBlank()) return PublishOutcome(PublishCode.MISSING_SCOPE_KEY)
         if (condition.isEmpty()) return PublishOutcome(PublishCode.EMPTY_CONDITION)
@@ -51,7 +52,7 @@ class RuleService(
             return PublishOutcome(PublishCode.UNKNOWN_SCOPE_FACILITY)
         }
 
-        val publishedAt = clock()
+        val published = publishedAt ?: clock()
         return transaction {
             val maxVersion = Rules.selectAll()
                 .where { Rules.ruleId eq ruleId }
@@ -70,7 +71,7 @@ class RuleService(
                 action = action,
                 effectiveFrom = effectiveFrom,
                 effectiveTo = effectiveTo,
-                publishedAt = publishedAt,
+                publishedAt = published,
             )
             try {
                 Rules.insert {

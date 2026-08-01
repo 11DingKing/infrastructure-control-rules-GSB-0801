@@ -5,6 +5,13 @@ info:
   description: |
     重点设施管控服务：设施、版本化规则、风险输入、无副作用规则求值、结果详情与解释。
 
+    ## 版本选择（回退语义）
+    同 `ruleId` 构成版本链。求值时在 `publishedAt <= asOf` 的可见版本内，
+    先按生效窗口过滤，再取覆盖 `now` 的最高版本；
+    已发布但尚未生效 / 已经过期的高版本不会淘汰仍然有效的低版本（区间外回退低版本）。
+    解释链为每个可见版本记录：SELECTED_EFFECTIVE_VERSION / SUPERSEDED_BY_NEWER_VERSION /
+    NOT_YET_EFFECTIVE / EXPIRED，并给出最终获胜规则。
+
     ## 冲突裁决
     固定顺序：人工强制(MANUAL) > 设施专用(FACILITY) > 区域(REGION) > 默认(DEFAULT)；
     同优先级采用更严格动作：CLOSE > RESTRICT > MONITOR；
@@ -340,6 +347,11 @@ components:
           format: int64
           nullable: true
           description: 不含边界；null 表示永久有效
+        publishedAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: 可选；显式指定发布时间（历史回放/演示用），缺省为服务器当前时间
     PublishRuleResponse:
       type: object
       properties:

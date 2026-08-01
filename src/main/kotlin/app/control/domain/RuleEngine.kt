@@ -21,30 +21,42 @@ object RuleEngine {
             .filter { rule -> rule.publishedAt <= asOf }
             .sortedWith(compareBy({ it.ruleId }, { it.version }))
 
-        // 2. 版本选择：每条规则链取可见的最高版本，其余标记为被取代。
-        val latestByChain = LinkedHashMap<String, Rule>()
-        for (rule in visible) {
-            val current = latestByChain[rule.ruleId]
-            if (current == null || rule.version > current.version) {
-                latestByChain[rule.ruleId] = rule
-            }
-        }
-        val latest = latestByChain.values.sortedBy { it.ruleId }
-        for (rule in visible) {
-            val chosen = latestByChain[rule.ruleId]
-            if (chosen != null && rule.version < chosen.version) {
+        // 2. 版本选择（回退语义）：在可见版本内先用生效窗口过滤，再取覆盖 now 的最高版本。
+        //    已发布但尚未生效 / 已经过期的高版本不会淘汰仍然有效的低版本；
+        //    每个可见版本都在解释链中记录“可见且生效被选中 / 被取代 / 尚未生效 / 已过期”。
+        val selected = mutableListOf<Rule>()
+        val chains = visible.groupBy { rule -> rule.ruleId }
+        for ((_, versions) in chains) {
+            val chosen = versions
+                .filter { rule -> windowViolation(rule, now) == null }
+                .maxByOrNull { rule -> rule.version }
+            for (rule in versions) {
+                val window = windowViolation(rule, now)
+                val code = when {
+                    chosen != null && rule.version == chosen.version && rule.ruleId == chosen.ruleId ->
+                        EvalCode.SELECTED_EFFECTIVE_VERSION
+                    window != null -> window
+                    else -> EvalCode.SUPERSEDED_BY_NEWER_VERSION
+                }
                 explanation += ExplanationEntry(
                     phase = Phase.VERSION_SELECTION,
                     rule = rule.ref(),
-                    code = EvalCode.SUPERSEDED_BY_NEWER_VERSION.name,
-                    facts = listOf(Fact("selectedVersion", chosen.version.toString())),
+                    code = code.name,
+                    facts = listOf(
+                        Fact("publishedAt", rule.publishedAt.toString()),
+                        Fact("asOf", asOf.toString()),
+                        Fact("now", now.toString()),
+                        Fact("effectiveFrom", rule.effectiveFrom.toString()),
+                        Fact("effectiveTo", rule.effectiveTo?.toString() ?: "null"),
+                    ),
                 )
             }
+            if (chosen != null) selected += chosen
         }
 
-        // 3. 作用域 / 生效窗口 / 条件检查
+        // 3. 作用域 / 条件检查（生效窗口已在版本选择阶段判定）
         val matched = mutableListOf<Rule>()
-        for (rule in latest) {
+        for (rule in selected) {
             if (!scopeMatches(facility, rule)) {
                 explanation += ExplanationEntry(
                     phase = Phase.SCOPE_CHECK,
@@ -54,21 +66,6 @@ object RuleEngine {
                         Fact("ruleScopeKey", rule.scopeKey),
                         Fact("facilityRegion", facility.region),
                         Fact("facilityId", facility.id),
-                    ),
-                )
-                continue
-            }
-
-            val windowCode = windowViolation(rule, now)
-            if (windowCode != null) {
-                explanation += ExplanationEntry(
-                    phase = Phase.WINDOW_CHECK,
-                    rule = rule.ref(),
-                    code = windowCode.name,
-                    facts = listOf(
-                        Fact("now", now.toString()),
-                        Fact("effectiveFrom", rule.effectiveFrom.toString()),
-                        Fact("effectiveTo", rule.effectiveTo?.toString() ?: "null"),
                     ),
                 )
                 continue

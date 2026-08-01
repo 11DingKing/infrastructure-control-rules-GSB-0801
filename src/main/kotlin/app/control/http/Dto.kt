@@ -39,6 +39,8 @@ data class PublishRuleRequest(
     val action: String,
     val effectiveFrom: Long,
     val effectiveTo: Long? = null,
+    /** 可选：显式指定发布时间（历史回放/演示用），缺省为服务器当前时间。 */
+    val publishedAt: Long? = null,
 )
 
 @Serializable

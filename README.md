@@ -10,7 +10,7 @@
 | --- | --- |
 | 冲突裁决 | 固定顺序：人工强制(MANUAL) > 设施专用(FACILITY) > 区域(REGION) > 默认(DEFAULT)；同优先级采用更严格动作：CLOSE > RESTRICT > MONITOR；再相同按 ruleId 字典序确定性裁决 |
 | 生效窗口 | `effectiveFrom <= now < effectiveTo`；`now == effectiveTo` 视为已过期；`effectiveTo = null` 永久有效 |
-| 版本链 | 同 `ruleId` 为一条链，求值取 `publishedAt <= asOf` 的最高版本；`(ruleId, version)` 唯一，并发重复发布只有一个赢家（其余 `DUPLICATE_VERSION`） |
+| 版本链 | 同 `ruleId` 为一条链：在 `publishedAt <= asOf` 的可见版本内，先按生效窗口过滤，再取覆盖 `now` 的最高版本；已发布但尚未生效/已过期的高版本不会淘汰仍有效的低版本（区间外自动回退）；`(ruleId, version)` 唯一，并发重复发布只有一个赢家（其余 `DUPLICATE_VERSION`） |
 | 历史隔离 | `asOf` 之前发布的版本才可见；历史解释不会偷看后来发布的规则 |
 | 纯求值 | `RuleEngine.evaluate` 是无副作用纯函数（不读时钟/DB/网络）；持久化与通知只消费求值结果，不参与判定 |
 | 确定性 | 相同（设施, 规则集, 快照, now, asOf）→ 字节级一致的 canonical JSON 与 SHA-256 `contentHash` |
@@ -42,10 +42,11 @@ gradle run            # 启动服务，默认 http://localhost:8080
 
 | 层 | ruleId | 条件 | 动作 | 窗口 |
 | --- | --- | --- | --- | --- |
-| DEFAULT | `default-heavy-rain` | 降水 ≥ 50mm | MONITOR | 永久 |
-| REGION | `region-440800-storm` | 降水 ≥ 60mm | RESTRICT | 永久 |
-| FACILITY | `facility-tunnel-17-depth` | 水深 ≥ 15cm | CLOSE | 永久 |
-| MANUAL | `manual-tunnel-17-typhoon` | 风力 ≥ 8 级 | CLOSE | 2026-07-01 ~ 2026-12-31T16:00Z（带过期） |
+| DEFAULT | `default-heavy-rain` v1 | 降水 ≥ 50mm | MONITOR | 永久 |
+| REGION | `region-440800-storm` v1 | 降水 ≥ 60mm | RESTRICT | 永久 |
+| REGION | `region-440800-storm` v2 | 降水 ≥ 75mm | RESTRICT | 2026-08-01 [04:00, 06:00)Z（03:30Z 发布；区间外回退 v1） |
+| FACILITY | `facility-tunnel-17-depth` v1 | 水深 ≥ 15cm | CLOSE | 永久 |
+| MANUAL | `manual-tunnel-17-typhoon` v1 | 风力 ≥ 8 级 | CLOSE | 2026-07-01 ~ 2026-12-31T16:00Z（带过期） |
 
 对种子输入求值：人工规则风力未达（7 < 8），设施层 `CLOSE` 胜出；把 `now` 传到 2027 年可看到人工规则 `EXPIRED`。
 

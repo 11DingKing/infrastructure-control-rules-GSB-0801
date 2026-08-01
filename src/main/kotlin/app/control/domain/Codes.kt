@@ -7,8 +7,10 @@ enum class EvalCode {
     /** 没有任何规则命中，无法得出管控动作。 */
     NO_MATCHING_RULE,
 
-    /** 该版本被同链更高版本取代。 */
+    /** 该版本被同链更高且当前生效的版本取代。 */
     SUPERSEDED_BY_NEWER_VERSION,
+    /** 该版本可见（publishedAt <= asOf）且生效窗口覆盖 now，被版本链选中。 */
+    SELECTED_EFFECTIVE_VERSION,
     /** 规则作用域不覆盖该设施。 */
     OUT_OF_SCOPE,
     /** now < effectiveFrom，规则尚未生效。 */

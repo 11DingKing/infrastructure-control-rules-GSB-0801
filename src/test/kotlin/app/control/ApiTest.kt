@@ -14,6 +14,7 @@ import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.testing.testApplication
 import java.nio.file.Files
+import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -147,6 +148,102 @@ class ApiTest {
         val spec = client.get("/openapi.yaml")
         assertEquals(HttpStatusCode.OK, spec.status)
         assertTrue(spec.body<String>().contains("Infrastructure Control Rules API"))
+    }
+
+    @Test
+    fun `region v2 窗口内外回退与选择：四个时刻端到端`() = testApplication {
+        freshDb()
+        testNow = NOW
+        val services = buildServices { testNow }
+        application { configureApi(services) }
+        val client = createClient { install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) } }
+
+        val t0330 = Instant.parse("2026-08-01T03:30:00Z").toEpochMilli()
+        val t0359 = Instant.parse("2026-08-01T03:59:59Z").toEpochMilli()
+        val t0400 = Instant.parse("2026-08-01T04:00:00Z").toEpochMilli()
+        val t0559 = Instant.parse("2026-08-01T05:59:59Z").toEpochMilli()
+        val t0600 = Instant.parse("2026-08-01T06:00:00Z").toEpochMilli()
+
+        client.post("/api/facilities") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"id":"tunnel-17","type":"TUNNEL","region":"440800","name":"示例隧道 17 号"}""")
+        }.also { assertEquals(HttpStatusCode.Created, it.status) }
+
+        // 72mm / 7 级 / 18cm 输入
+        val inputId = client.post("/api/risk-inputs") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"facilityId":"tunnel-17","observedAt":$NOW,"precipitationMm":72.0,"windLevel":7,"waterDepthCm":18.0}""")
+        }.body<app.control.http.IngestRiskInputResponse>().id
+
+        suspend fun publishRule(body: String) = client.post("/api/rules") {
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }
+
+        publishRule("""{"ruleId":"default-heavy-rain","version":1,"tier":"DEFAULT","action":"MONITOR","precipitationMmAtLeast":50.0,"effectiveFrom":0,"publishedAt":$t0330}""")
+            .also { assertEquals(HttpStatusCode.Created, it.status) }
+        publishRule("""{"ruleId":"region-440800-storm","version":1,"tier":"REGION","scopeKey":"440800","action":"RESTRICT","precipitationMmAtLeast":60.0,"effectiveFrom":0,"publishedAt":$t0330}""")
+            .also { assertEquals(HttpStatusCode.Created, it.status) }
+        publishRule("""{"ruleId":"facility-tunnel-17-depth","version":1,"tier":"FACILITY","scopeKey":"tunnel-17","facilityType":"TUNNEL","action":"CLOSE","waterDepthCmAtLeast":15.0,"effectiveFrom":0,"publishedAt":$t0330}""")
+            .also { assertEquals(HttpStatusCode.Created, it.status) }
+        publishRule("""{"ruleId":"manual-tunnel-17-typhoon","version":1,"tier":"MANUAL","scopeKey":"tunnel-17","action":"CLOSE","windLevelAtLeast":8,"effectiveFrom":0,"publishedAt":$t0330}""")
+            .also { assertEquals(HttpStatusCode.Created, it.status) }
+
+        // v2：指定发布时间 03:30，生效区间 [04:00, 06:00)，阈值 60 -> 75，层级与动作不变
+        publishRule(
+            """{"ruleId":"region-440800-storm","version":2,"tier":"REGION","scopeKey":"440800","action":"RESTRICT",""" +
+                """"precipitationMmAtLeast":75.0,"effectiveFrom":$t0400,"effectiveTo":$t0600,"publishedAt":$t0330}""",
+        ).also { resp ->
+            assertEquals(HttpStatusCode.Created, resp.status)
+            assertEquals(t0330, resp.body<app.control.http.PublishRuleResponse>().publishedAt)
+        }
+
+        suspend fun evaluate(now: Long) = client.post("/api/evaluations") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"facilityId":"tunnel-17","inputId":$inputId,"now":$now}""")
+        }.also { assertEquals(HttpStatusCode.Created, it.status) }
+            .body<app.control.http.EvaluationResponse>()
+
+        fun regionEntry(evaluation: app.control.http.EvaluationResponse, version: Int, code: String) =
+            evaluation.result.explanation.any { e ->
+                e.rule?.ruleId == "region-440800-storm" && e.rule?.version == version && e.code == code
+            }
+
+        // 03:59:59Z：v2 尚未生效，回退 v1；v1 命中 RESTRICT，最终设施层 CLOSE 获胜
+        evaluate(t0359).also {
+            assertEquals("facility-tunnel-17-depth", it.result.decision?.rule?.ruleId)
+            assertEquals("CLOSE", it.result.decision?.action?.name)
+            assertTrue(regionEntry(it, 1, "SELECTED_EFFECTIVE_VERSION"))
+            assertTrue(regionEntry(it, 1, "MATCHED"))
+            assertTrue(regionEntry(it, 2, "NOT_YET_EFFECTIVE"))
+        }
+        // 04:00:00Z：选择 v2，72 < 75 阈值未命中；最终仍设施层 CLOSE
+        val at0400 = evaluate(t0400).also {
+            assertEquals("facility-tunnel-17-depth", it.result.decision?.rule?.ruleId)
+            assertEquals("CLOSE", it.result.decision?.action?.name)
+            assertTrue(regionEntry(it, 2, "SELECTED_EFFECTIVE_VERSION"))
+            assertTrue(regionEntry(it, 2, "BELOW_THRESHOLD"))
+            assertTrue(regionEntry(it, 1, "SUPERSEDED_BY_NEWER_VERSION"))
+            val below = it.result.explanation.first { e -> e.code == "BELOW_THRESHOLD" && e.rule?.ruleId == "region-440800-storm" }
+            assertEquals("75.0", below.facts.first { f -> f.key == "thresholdAtLeast" }.value)
+            assertEquals("72.0", below.facts.first { f -> f.key == "observed" }.value)
+        }
+        // 05:59:59Z：区间内仍选 v2 且未命中
+        evaluate(t0559).also {
+            assertEquals("facility-tunnel-17-depth", it.result.decision?.rule?.ruleId)
+            assertTrue(regionEntry(it, 2, "SELECTED_EFFECTIVE_VERSION"))
+            assertTrue(regionEntry(it, 2, "BELOW_THRESHOLD"))
+        }
+        // 06:00:00Z：v2 恰好过期，回退 v1 并命中
+        evaluate(t0600).also {
+            assertEquals("facility-tunnel-17-depth", it.result.decision?.rule?.ruleId)
+            assertEquals("CLOSE", it.result.decision?.action?.name)
+            assertTrue(regionEntry(it, 1, "SELECTED_EFFECTIVE_VERSION"))
+            assertTrue(regionEntry(it, 1, "MATCHED"))
+            assertTrue(regionEntry(it, 2, "EXPIRED"))
+        }
+        // 确定性：同一时刻重复求值指纹一致
+        evaluate(t0400).also { assertEquals(at0400.contentHash, it.contentHash) }
     }
 
     @Test
