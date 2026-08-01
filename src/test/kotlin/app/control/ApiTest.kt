@@ -247,6 +247,106 @@ class ApiTest {
     }
 
     @Test
+    fun `manual v2 回放与 asOf 历史隔离`() = testApplication {
+        freshDb()
+        testNow = NOW
+        val services = buildServices { testNow }
+        application { configureApi(services) }
+        val client = createClient { install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) } }
+
+        val t0330 = Instant.parse("2026-08-01T03:30:00Z").toEpochMilli()
+        val t0445 = Instant.parse("2026-08-01T04:45:00Z").toEpochMilli()
+        val t0450 = Instant.parse("2026-08-01T04:50:00Z").toEpochMilli()
+        val t0459 = Instant.parse("2026-08-01T04:59:59Z").toEpochMilli()
+        val t0500 = Instant.parse("2026-08-01T05:00:00Z").toEpochMilli()
+        val t0515 = Instant.parse("2026-08-01T05:15:00Z").toEpochMilli()
+        val t0530 = Instant.parse("2026-08-01T05:30:00Z").toEpochMilli()
+
+        client.post("/api/facilities") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"id":"tunnel-17","type":"TUNNEL","region":"440800","name":"示例隧道 17 号"}""")
+        }.also { assertEquals(HttpStatusCode.Created, it.status) }
+
+        val inputId = client.post("/api/risk-inputs") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"facilityId":"tunnel-17","observedAt":$NOW,"precipitationMm":72.0,"windLevel":7,"waterDepthCm":18.0}""")
+        }.body<app.control.http.IngestRiskInputResponse>().id
+
+        suspend fun publishRule(body: String) = client.post("/api/rules") {
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }
+
+        publishRule("""{"ruleId":"default-heavy-rain","version":1,"tier":"DEFAULT","action":"MONITOR","precipitationMmAtLeast":50.0,"effectiveFrom":0,"publishedAt":$t0330}""")
+            .also { assertEquals(HttpStatusCode.Created, it.status) }
+        publishRule("""{"ruleId":"facility-tunnel-17-depth","version":1,"tier":"FACILITY","scopeKey":"tunnel-17","facilityType":"TUNNEL","action":"CLOSE","waterDepthCmAtLeast":15.0,"effectiveFrom":0,"publishedAt":$t0330}""")
+            .also { assertEquals(HttpStatusCode.Created, it.status) }
+        publishRule("""{"ruleId":"manual-tunnel-17-typhoon","version":1,"tier":"MANUAL","scopeKey":"tunnel-17","action":"CLOSE","windLevelAtLeast":8,"effectiveFrom":0,"publishedAt":$t0330}""")
+            .also { assertEquals(HttpStatusCode.Created, it.status) }
+
+        // manual v2：04:50Z 发布（晚于历史查询的 asOf=04:45Z），[05:00, 05:30) 强制 CLOSE
+        publishRule(
+            """{"ruleId":"manual-tunnel-17-typhoon","version":2,"tier":"MANUAL","scopeKey":"tunnel-17","action":"CLOSE",""" +
+                """"precipitationMmAtLeast":0.0,"effectiveFrom":$t0500,"effectiveTo":$t0530,"publishedAt":$t0450}""",
+        ).also { resp ->
+            assertEquals(HttpStatusCode.Created, resp.status)
+            assertEquals(t0450, resp.body<app.control.http.PublishRuleResponse>().publishedAt)
+        }
+
+        suspend fun evaluate(now: Long, asOf: Long? = null) = client.post("/api/evaluations") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                if (asOf == null) {
+                    """{"facilityId":"tunnel-17","inputId":$inputId,"now":$now}"""
+                } else {
+                    """{"facilityId":"tunnel-17","inputId":$inputId,"now":$now,"asOf":$asOf}"""
+                },
+            )
+        }.also { assertEquals(HttpStatusCode.Created, it.status) }
+            .body<app.control.http.EvaluationResponse>()
+
+        fun manualEntry(evaluation: app.control.http.EvaluationResponse, version: Int, code: String) =
+            evaluation.result.explanation.any { e ->
+                e.rule?.ruleId == "manual-tunnel-17-typhoon" && e.rule?.version == version && e.code == code
+            }
+
+        // 04:59:59Z：v2 尚未生效，回退 v1（风力 7 < 8 未达），设施层 CLOSE 获胜
+        evaluate(t0459).also {
+            assertEquals("facility-tunnel-17-depth", it.result.decision?.rule?.ruleId)
+            assertTrue(manualEntry(it, 2, "NOT_YET_EFFECTIVE"))
+            assertTrue(manualEntry(it, 1, "BELOW_THRESHOLD"))
+        }
+        // 05:00:00Z：v2 强制 CLOSE，人工层按优先级当选
+        evaluate(t0500).also {
+            assertEquals("manual-tunnel-17-typhoon", it.result.decision?.rule?.ruleId)
+            assertEquals(2, it.result.decision?.rule?.version)
+            assertEquals("CLOSE", it.result.decision?.action?.name)
+            assertEquals("MANUAL", it.result.decision?.tier)
+            assertTrue(manualEntry(it, 2, "SELECTED_EFFECTIVE_VERSION"))
+            assertTrue(manualEntry(it, 2, "MATCHED"))
+        }
+        // 05:30:00Z：v2 恰好过期，人工到期后回到设施层规则
+        evaluate(t0530).also {
+            assertEquals("facility-tunnel-17-depth", it.result.decision?.rule?.ruleId)
+            assertEquals("CLOSE", it.result.decision?.action?.name)
+            assertTrue(manualEntry(it, 2, "EXPIRED"))
+            assertTrue(manualEntry(it, 1, "SELECTED_EFFECTIVE_VERSION"))
+        }
+        // now=05:15 且 asOf=04:45Z：v2 当时尚未发布，历史解释不得引用
+        evaluate(t0515, t0445).also {
+            assertEquals("facility-tunnel-17-depth", it.result.decision?.rule?.ruleId)
+            assertTrue(
+                it.result.explanation.none { e ->
+                    e.rule?.ruleId == "manual-tunnel-17-typhoon" && e.rule?.version == 2
+                },
+                "historical explanation must not reference manual v2",
+            )
+            assertTrue(manualEntry(it, 1, "SELECTED_EFFECTIVE_VERSION"))
+            assertTrue(manualEntry(it, 1, "BELOW_THRESHOLD"))
+        }
+    }
+
+    @Test
     fun `缺失输入时返回可枚举原因码`() = testApplication {
         freshDb()
         val services = buildServices { NOW }

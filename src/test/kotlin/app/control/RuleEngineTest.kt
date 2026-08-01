@@ -251,8 +251,84 @@ class RuleEngineTest {
                     expectedAction = Action.MONITOR, expectedRuleId = "default-heavy-rain",
                     expectCodes = setOf(EvalCode.SELECTED_SOLE_MATCH.name),
                 ),
-            ) + regionV2WindowCases()
+            ) + regionV2WindowCases() + manualV2ReplayCases()
         }
+
+    /** manual-tunnel-17-typhoon v2：04:50 发布，[05:00, 05:30) 无条件强制 CLOSE；v1 风力 >= 8。 */
+    private fun manualV2ReplayCases(): List<Case> {
+        val t0330 = Instant.parse("2026-08-01T03:30:00Z").toEpochMilli()
+        val t0400 = Instant.parse("2026-08-01T04:00:00Z").toEpochMilli()
+        val t0445 = Instant.parse("2026-08-01T04:45:00Z").toEpochMilli()
+        val t0450 = Instant.parse("2026-08-01T04:50:00Z").toEpochMilli()
+        val t0459 = Instant.parse("2026-08-01T04:59:59Z").toEpochMilli()
+        val t0500 = Instant.parse("2026-08-01T05:00:00Z").toEpochMilli()
+        val t0515 = Instant.parse("2026-08-01T05:15:00Z").toEpochMilli()
+        val t0530 = Instant.parse("2026-08-01T05:30:00Z").toEpochMilli()
+        val t0600 = Instant.parse("2026-08-01T06:00:00Z").toEpochMilli()
+
+        val rules = listOf(
+            defaultRule(),
+            rule("region-440800-storm", RuleTier.REGION, "440800", Action.RESTRICT, RuleCondition(precipitationMmAtLeast = 60.0), version = 1),
+            rule(
+                "region-440800-storm", RuleTier.REGION, "440800", Action.RESTRICT, RuleCondition(precipitationMmAtLeast = 75.0),
+                version = 2, effectiveFrom = t0400, effectiveTo = t0600, publishedAt = t0330,
+            ),
+            rule("facility-tunnel-17-depth", RuleTier.FACILITY, "tunnel-17", Action.CLOSE, RuleCondition(waterDepthCmAtLeast = 15.0)),
+            rule("manual-tunnel-17-typhoon", RuleTier.MANUAL, "tunnel-17", Action.CLOSE, RuleCondition(windLevelAtLeast = 8), version = 1),
+            rule(
+                "manual-tunnel-17-typhoon", RuleTier.MANUAL, "tunnel-17", Action.CLOSE, RuleCondition(precipitationMmAtLeast = 0.0),
+                version = 2, effectiveFrom = t0500, effectiveTo = t0530, publishedAt = t0450,
+            ),
+        )
+        val manual = "manual-tunnel-17-typhoon"
+
+        return listOf(
+            Case(
+                name = "manual v2 尚未生效（04:59:59Z）：回退 v1 阈值未达，设施层获胜",
+                rules = rules, input = fullInput, now = t0459, asOf = t0459,
+                expectedAction = Action.CLOSE, expectedRuleId = "facility-tunnel-17-depth",
+                expectRuleCodes = listOf(
+                    Triple(manual, 2, EvalCode.NOT_YET_EFFECTIVE.name),
+                    Triple(manual, 1, EvalCode.SELECTED_EFFECTIVE_VERSION.name),
+                    Triple(manual, 1, EvalCode.BELOW_THRESHOLD.name),
+                ),
+                expectedMatchedRuleIds = listOf("facility-tunnel-17-depth", "default-heavy-rain"),
+            ),
+            Case(
+                name = "manual v2 生效起点（05:00:00Z）：人工强制 CLOSE 按层级优先级当选",
+                rules = rules, input = fullInput, now = t0500, asOf = t0500,
+                expectedAction = Action.CLOSE, expectedRuleId = manual,
+                expectCodes = setOf(EvalCode.SELECTED_TIER_PRECEDENCE.name),
+                expectRuleCodes = listOf(
+                    Triple(manual, 2, EvalCode.SELECTED_EFFECTIVE_VERSION.name),
+                    Triple(manual, 2, EvalCode.MATCHED.name),
+                    Triple(manual, 1, EvalCode.SUPERSEDED_BY_NEWER_VERSION.name),
+                ),
+                expectedMatchedRuleIds = listOf(manual, "facility-tunnel-17-depth", "default-heavy-rain"),
+            ),
+            Case(
+                name = "manual v2 恰好过期（05:30:00Z）：人工到期后回到设施层规则",
+                rules = rules, input = fullInput, now = t0530, asOf = t0530,
+                expectedAction = Action.CLOSE, expectedRuleId = "facility-tunnel-17-depth",
+                expectRuleCodes = listOf(
+                    Triple(manual, 2, EvalCode.EXPIRED.name),
+                    Triple(manual, 1, EvalCode.SELECTED_EFFECTIVE_VERSION.name),
+                    Triple(manual, 1, EvalCode.BELOW_THRESHOLD.name),
+                ),
+                expectedMatchedRuleIds = listOf("facility-tunnel-17-depth", "default-heavy-rain"),
+            ),
+            Case(
+                name = "历史解释（now=05:15, asOf=04:45）：v2 尚不可见，不得引用",
+                rules = rules, input = fullInput, now = t0515, asOf = t0445,
+                expectedAction = Action.CLOSE, expectedRuleId = "facility-tunnel-17-depth",
+                expectRuleCodes = listOf(
+                    Triple(manual, 1, EvalCode.SELECTED_EFFECTIVE_VERSION.name),
+                    Triple(manual, 1, EvalCode.BELOW_THRESHOLD.name),
+                ),
+                expectedMatchedRuleIds = listOf("facility-tunnel-17-depth", "default-heavy-rain"),
+            ),
+        )
+    }
 
     /** region-440800-storm v2：03:30 发布，[04:00, 06:00) 生效，阈值 75mm；v1 永久有效，阈值 60mm。 */
     private fun regionV2WindowCases(): List<Case> {

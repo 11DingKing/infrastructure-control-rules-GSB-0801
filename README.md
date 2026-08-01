@@ -47,6 +47,7 @@ gradle run            # 启动服务，默认 http://localhost:8080
 | REGION | `region-440800-storm` v2 | 降水 ≥ 75mm | RESTRICT | 2026-08-01 [04:00, 06:00)Z（03:30Z 发布；区间外回退 v1） |
 | FACILITY | `facility-tunnel-17-depth` v1 | 水深 ≥ 15cm | CLOSE | 永久 |
 | MANUAL | `manual-tunnel-17-typhoon` v1 | 风力 ≥ 8 级 | CLOSE | 2026-07-01 ~ 2026-12-31T16:00Z（带过期） |
+| MANUAL | `manual-tunnel-17-typhoon` v2 | 降水 ≥ 0mm（无条件强制） | CLOSE | 2026-08-01 [05:00, 05:30)Z（04:50Z 发布；到期回退 v1 并回到设施/区域裁决） |
 
 对种子输入求值：人工规则风力未达（7 < 8），设施层 `CLOSE` 胜出；把 `now` 传到 2027 年可看到人工规则 `EXPIRED`。
 

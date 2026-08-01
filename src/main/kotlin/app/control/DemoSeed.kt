@@ -44,6 +44,7 @@ object DemoSeed {
             condition = RuleCondition(precipitationMmAtLeast = 50.0),
             action = Action.MONITOR,
             effectiveFrom = baseline, effectiveTo = null,
+            publishedAt = baseline,
         )
         // 区域层：440800 区域小时降水 >= 60mm 即限行
         services.rules.publish(
@@ -52,6 +53,7 @@ object DemoSeed {
             condition = RuleCondition(precipitationMmAtLeast = 60.0),
             action = Action.RESTRICT,
             effectiveFrom = baseline, effectiveTo = null,
+            publishedAt = baseline,
         )
         // 区域层 v2：2026-08-01T03:30:00Z 发布，仅在 [04:00, 06:00) 生效，阈值上调到 75mm；
         // 生效区间外版本选择回退到永久有效的 v1。
@@ -71,6 +73,7 @@ object DemoSeed {
             condition = RuleCondition(waterDepthCmAtLeast = 15.0),
             action = Action.CLOSE,
             effectiveFrom = baseline, effectiveTo = null,
+            publishedAt = baseline,
         )
         // 人工强制层：tunnel-17 风力 >= 8 级即封闭，带过期时间（台风季结束失效）
         services.rules.publish(
@@ -80,6 +83,18 @@ object DemoSeed {
             action = Action.CLOSE,
             effectiveFrom = Instant.parse("2026-07-01T00:00:00Z").toEpochMilli(),
             effectiveTo = Instant.parse("2026-12-31T16:00:00Z").toEpochMilli(),
+            publishedAt = baseline,
+        )
+        // 人工强制层 v2：2026-08-01T04:50:00Z 发布，仅在 [05:00, 05:30) 无条件强制 CLOSE；
+        // 到期后回退到 v1（阈值未达）并回到设施/区域层裁决。
+        services.rules.publish(
+            ruleId = "manual-tunnel-17-typhoon", version = 2, tier = RuleTier.MANUAL, scopeKey = FACILITY_ID,
+            facilityType = null,
+            condition = RuleCondition(precipitationMmAtLeast = 0.0),
+            action = Action.CLOSE,
+            effectiveFrom = Instant.parse("2026-08-01T05:00:00Z").toEpochMilli(),
+            effectiveTo = Instant.parse("2026-08-01T05:30:00Z").toEpochMilli(),
+            publishedAt = Instant.parse("2026-08-01T04:50:00Z").toEpochMilli(),
         )
     }
 }
