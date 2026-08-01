@@ -1,0 +1,85 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Infrastructure Control Rules API",
+    "version": "1.0.0",
+    "description": "重点设施管控服务：设施管理、版本化规则、风险输入求值、结果详情与完整解释链"
+  },
+  "paths": {
+    "/api/facilities": {
+      "get": {
+        "summary": "列出所有设施",
+        "responses": { "200": { "description": "设施列表" } }
+      },
+      "post": {
+        "summary": "创建设施",
+        "responses": { "201": { "description": "已创建" } }
+      }
+    },
+    "/api/facilities/{id}": {
+      "get": {
+        "summary": "获取设施详情",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "设施详情" }, "404": { "description": "未找到" } }
+      }
+    },
+    "/api/rules": {
+      "get": {
+        "summary": "列出规则（可按 layer/facilityId/regionCode 过滤）",
+        "parameters": [
+          { "name": "layer", "in": "query", "schema": { "type": "string", "enum": ["DEFAULT", "REGION", "FACILITY", "MANUAL"] } },
+          { "name": "facilityId", "in": "query", "schema": { "type": "string" } },
+          { "name": "regionCode", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "规则列表" } }
+      },
+      "post": {
+        "summary": "发布新版本规则（同 id+version 冲突返回 409）",
+        "responses": { "201": { "description": "已发布" }, "409": { "description": "版本冲突" } }
+      }
+    },
+    "/api/rules/{id}": {
+      "get": {
+        "summary": "获取规则（可指定 version）",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "version", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "规则详情" } }
+      }
+    },
+    "/api/evaluate": {
+      "post": {
+        "summary": "风险求值（纯领域引擎，持久化和通知只消费结果）",
+        "responses": { "200": { "description": "求值结果，含完整解释链" } }
+      }
+    },
+    "/api/evaluate/batch": {
+      "post": {
+        "summary": "批量风险求值",
+        "responses": { "200": { "description": "批量求值结果" } }
+      }
+    },
+    "/api/results": {
+      "get": {
+        "summary": "列出历史求值结果",
+        "parameters": [{ "name": "facilityId", "in": "query", "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "结果列表" } }
+      }
+    },
+    "/api/results/{requestId}": {
+      "get": {
+        "summary": "获取单次求值结果详情",
+        "parameters": [{ "name": "requestId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "结果详情" } }
+      }
+    },
+    "/api/results/{requestId}/explanation": {
+      "get": {
+        "summary": "获取完整解释链（命中规则版本、输入快照、逐层裁决过程）",
+        "parameters": [{ "name": "requestId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "解释链" } }
+      }
+    }
+  }
+}
