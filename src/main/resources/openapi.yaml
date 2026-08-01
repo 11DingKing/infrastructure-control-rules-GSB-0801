@@ -248,6 +248,20 @@ components:
             - SUPERSEDED_BY_STRICTER_SIBLING
         decisive: { type: boolean }
         detail: { type: string }
+        breakdown: { $ref: "#/components/schemas/TraceBreakdown" }
+    TraceBreakdown:
+      type: object
+      description: Per-dimension breakdown of a rule's fate, computed independently.
+      properties:
+        visibility: { type: string, enum: [VISIBLE, NOT_PUBLISHED] }
+        scope: { type: string, enum: [IN_SCOPE, OUT_OF_SCOPE] }
+        window: { type: string, enum: [NOT_YET_EFFECTIVE, EFFECTIVE, EXPIRED] }
+        versionSelection: { type: string, enum: [SELECTED, SUPERSEDED_BY_NEWER_VERSION, NOT_APPLICABLE] }
+        condition: { type: string, enum: [MET, NOT_MET, MISSING_INPUT] }
+        missingMetric: { type: string, nullable: true }
+        priority:
+          type: string
+          enum: [DECISIVE, SUPERSEDED_BY_HIGHER_LAYER, SUPERSEDED_BY_STRICTER_SIBLING, DID_NOT_FIRE]
     EvaluationResponse:
       type: object
       properties:
@@ -265,6 +279,7 @@ components:
           type: array
           items: { type: string }
         canonicalDigest: { type: string, nullable: true }
+        contentHash: { type: string }
         explanation:
           type: array
           items: { $ref: "#/components/schemas/TraceLine" }

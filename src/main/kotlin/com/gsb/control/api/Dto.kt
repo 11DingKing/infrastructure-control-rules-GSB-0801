@@ -79,6 +79,17 @@ data class RuleResponse(
 )
 
 @Serializable
+data class TraceBreakdownResponse(
+    val visibility: String,
+    val scope: String,
+    val window: String,
+    val versionSelection: String,
+    val condition: String,
+    val missingMetric: String? = null,
+    val priority: String,
+)
+
+@Serializable
 data class TraceLineResponse(
     val versionRef: String,
     val ruleKey: String,
@@ -88,6 +99,7 @@ data class TraceLineResponse(
     val outcome: String,
     val decisive: Boolean,
     val detail: String,
+    val breakdown: TraceBreakdownResponse,
 )
 
 @Serializable
@@ -102,6 +114,7 @@ data class EvaluationResponse(
     val asOf: String,
     val firedVersionRefs: List<String>,
     val canonicalDigest: String? = null,
+    val contentHash: String,
     val explanation: List<TraceLineResponse>,
 )
 

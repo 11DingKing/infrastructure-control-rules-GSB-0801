@@ -48,6 +48,7 @@ object EvaluationResultsTable : IntIdTable("evaluation_results") {
     val firedVersionRefs = text("fired_version_refs") // JSON array of strings
     val explanationJson = text("explanation_json")    // JSON array of trace lines
     val canonicalDigest = varchar("canonical_digest", 64)
+    val contentHash = varchar("content_hash", 64)     // sha256 over canonical JSON (schema v2)
     val createdAt = timestamp("created_at")
 }
 

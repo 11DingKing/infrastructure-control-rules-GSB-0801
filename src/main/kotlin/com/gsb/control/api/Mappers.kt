@@ -189,6 +189,7 @@ object Mappers {
             asOf = result.asOf.toString(),
             firedVersionRefs = result.firedVersionRefs,
             canonicalDigest = digest,
+            contentHash = result.contentHash,
             explanation = result.trace.map {
                 TraceLineResponse(
                     versionRef = it.versionRef,
@@ -199,6 +200,15 @@ object Mappers {
                     outcome = it.outcome.code,
                     decisive = it.decisive,
                     detail = it.detail,
+                    breakdown = TraceBreakdownResponse(
+                        visibility = it.breakdown.visibility.name,
+                        scope = it.breakdown.scope.name,
+                        window = it.breakdown.window.name,
+                        versionSelection = it.breakdown.versionSelection.name,
+                        condition = it.breakdown.condition.name,
+                        missingMetric = it.breakdown.missingMetric,
+                        priority = it.breakdown.priority.name,
+                    ),
                 )
             },
         )

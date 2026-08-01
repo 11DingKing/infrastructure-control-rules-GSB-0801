@@ -41,7 +41,7 @@ class Db private constructor(
     fun <T> writeTx(block: () -> T): T = writeLock.withLock { transaction(database) { block() } }
 
     companion object {
-        const val SCHEMA_VERSION = 1
+        const val SCHEMA_VERSION = 2
 
         /**
          * Connect to SQLite at [path] (use ":memory:" for an isolated in-memory
@@ -81,8 +81,23 @@ class Db private constructor(
             transaction(database) {
                 SchemaUtils.create(SchemaMetaTable)
                 val current = SchemaMetaTable.currentVersion()
-                if (current < SCHEMA_VERSION) {
+                // v1: base tables. v2: add evaluation_results.content_hash.
+                if (current < 1) {
                     SchemaUtils.createMissingTablesAndColumns(*AllTables)
+                }
+                if (current in 1 until SCHEMA_VERSION) {
+                    // Forward migration from v1 to v2: add the column with a
+                    // default so any pre-existing rows remain valid.
+                    exec(
+                        "ALTER TABLE evaluation_results " +
+                            "ADD COLUMN content_hash VARCHAR(64) NOT NULL DEFAULT ''",
+                    )
+                }
+                if (current == 0) {
+                    // Fresh database already has content_hash from the table def;
+                    // nothing extra to do beyond version stamping below.
+                }
+                if (current < SCHEMA_VERSION) {
                     SchemaMetaTable.setVersion(SCHEMA_VERSION)
                 }
             }

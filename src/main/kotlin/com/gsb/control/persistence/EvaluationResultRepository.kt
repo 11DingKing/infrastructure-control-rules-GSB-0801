@@ -18,6 +18,7 @@ data class StoredEvaluation(
     val id: Int,
     val result: EvaluationResult,
     val canonicalDigest: String,
+    val contentHash: String,
     val createdAt: Instant,
 )
 
@@ -30,6 +31,17 @@ data class StoredEvaluation(
 class EvaluationResultRepository(private val db: Db) {
 
     @Serializable
+    private data class BreakdownDto(
+        val visibility: String,
+        val scope: String,
+        val window: String,
+        val versionSelection: String,
+        val condition: String,
+        val missingMetric: String? = null,
+        val priority: String,
+    )
+
+    @Serializable
     private data class TraceLineDto(
         val ruleKey: String,
         val version: Int,
@@ -39,6 +51,7 @@ class EvaluationResultRepository(private val db: Db) {
         val outcome: String,
         val decisive: Boolean,
         val detail: String,
+        val breakdown: BreakdownDto,
     )
 
     fun save(result: EvaluationResult): StoredEvaluation = db.writeTx {
@@ -55,9 +68,10 @@ class EvaluationResultRepository(private val db: Db) {
             it[firedVersionRefs] = DomainCodec.json.encodeToString(result.firedVersionRefs)
             it[explanationJson] = DomainCodec.json.encodeToString(result.trace.map { t -> t.toDto() })
             it[canonicalDigest] = digest
+            it[contentHash] = result.contentHash
             it[EvaluationResultsTable.createdAt] = createdAt
         }.value
-        StoredEvaluation(newId, result, digest, createdAt)
+        StoredEvaluation(newId, result, digest, result.contentHash, createdAt)
     }
 
     fun findById(id: Int): StoredEvaluation? = db.tx {
@@ -81,6 +95,15 @@ class EvaluationResultRepository(private val db: Db) {
         outcome = outcome.code,
         decisive = decisive,
         detail = detail,
+        breakdown = BreakdownDto(
+            visibility = breakdown.visibility.name,
+            scope = breakdown.scope.name,
+            window = breakdown.window.name,
+            versionSelection = breakdown.versionSelection.name,
+            condition = breakdown.condition.name,
+            missingMetric = breakdown.missingMetric,
+            priority = breakdown.priority.name,
+        ),
     )
 
     private fun ResultRow.toStored(): StoredEvaluation {
@@ -96,6 +119,15 @@ class EvaluationResultRepository(private val db: Db) {
                     ?: throw IllegalStateException("Unknown reason code in storage: ${dto.outcome}"),
                 decisive = dto.decisive,
                 detail = dto.detail,
+                breakdown = com.gsb.control.domain.TraceBreakdown(
+                    visibility = com.gsb.control.domain.Visibility.valueOf(dto.breakdown.visibility),
+                    scope = com.gsb.control.domain.ScopeMatch.valueOf(dto.breakdown.scope),
+                    window = com.gsb.control.domain.WindowState.valueOf(dto.breakdown.window),
+                    versionSelection = com.gsb.control.domain.VersionSelection.valueOf(dto.breakdown.versionSelection),
+                    condition = com.gsb.control.domain.ConditionState.valueOf(dto.breakdown.condition),
+                    missingMetric = dto.breakdown.missingMetric,
+                    priority = com.gsb.control.domain.PriorityResolution.valueOf(dto.breakdown.priority),
+                ),
             )
         }
         val fired = DomainCodec.json.decodeFromString<List<String>>(this[EvaluationResultsTable.firedVersionRefs])
@@ -114,6 +146,7 @@ class EvaluationResultRepository(private val db: Db) {
             id = this[EvaluationResultsTable.id].value,
             result = result,
             canonicalDigest = this[EvaluationResultsTable.canonicalDigest],
+            contentHash = this[EvaluationResultsTable.contentHash],
             createdAt = this[EvaluationResultsTable.createdAt],
         )
     }

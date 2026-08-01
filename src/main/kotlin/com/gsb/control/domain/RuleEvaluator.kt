@@ -59,7 +59,7 @@ object RuleEvaluator {
         val firedByLayer = LinkedHashMap<RuleLayer, MutableList<Rule>>()
 
         for (rule in ordered) {
-            val outcome = classify(rule, facility, input, evaluatedAt, asOf, activeVersionByKey)
+            val (outcome, breakdown) = classify(rule, facility, input, evaluatedAt, asOf, activeVersionByKey)
             traces.add(
                 RuleTrace(
                     ruleKey = rule.ruleKey,
@@ -70,6 +70,7 @@ object RuleEvaluator {
                     outcome = outcome,
                     decisive = false,
                     detail = detailFor(rule, outcome),
+                    breakdown = breakdown,
                 ),
             )
             if (outcome == ReasonCode.MATCHED) {
@@ -109,19 +110,31 @@ object RuleEvaluator {
         val decision = decisiveRule.action
 
         // Reclassify fired rules against the decision to refine their reasons,
-        // and mark the single decisive rule.
+        // and mark the single decisive rule. Also fill in the independent
+        // priority-resolution dimension of the breakdown.
         val refinedTraces = traces.map { t ->
             if (t.outcome != ReasonCode.MATCHED) return@map t
             when {
                 t.versionRef == decisiveRule.versionRef && t.layer == decidingLayer ->
-                    t.copy(decisive = true)
+                    t.copy(
+                        decisive = true,
+                        breakdown = t.breakdown.copy(priority = PriorityResolution.DECISIVE),
+                    )
 
                 t.layer.priority < decidingLayer.priority ->
-                    t.copy(outcome = ReasonCode.SUPERSEDED_BY_HIGHER_LAYER, detail = supersededHigherDetail(decidingLayer))
+                    t.copy(
+                        outcome = ReasonCode.SUPERSEDED_BY_HIGHER_LAYER,
+                        detail = supersededHigherDetail(decidingLayer),
+                        breakdown = t.breakdown.copy(priority = PriorityResolution.SUPERSEDED_BY_HIGHER_LAYER),
+                    )
 
                 else ->
                     // Same deciding layer but not the chosen sibling.
-                    t.copy(outcome = ReasonCode.SUPERSEDED_BY_STRICTER_SIBLING, detail = supersededSiblingDetail(decisiveRule))
+                    t.copy(
+                        outcome = ReasonCode.SUPERSEDED_BY_STRICTER_SIBLING,
+                        detail = supersededSiblingDetail(decisiveRule),
+                        breakdown = t.breakdown.copy(priority = PriorityResolution.SUPERSEDED_BY_STRICTER_SIBLING),
+                    )
             }
         }
 
@@ -142,7 +155,14 @@ object RuleEvaluator {
         )
     }
 
-    /** Classify a single rule into the reason it fired or not (pre-conflict). */
+    /**
+     * Compute every dimension of a rule's fate independently, then derive the
+     * collapsed effective [ReasonCode] from them by fixed precedence
+     * (visibility → scope → window → version → condition). The priority
+     * dimension is filled in later during adjudication. Returning the full
+     * [TraceBreakdown] lets an audit see, e.g., that a rule was EFFECTIVE and
+     * SELECTED yet failed only on its condition — rather than a single code.
+     */
     private fun classify(
         rule: Rule,
         facility: Facility,
@@ -150,24 +170,60 @@ object RuleEvaluator {
         evaluatedAt: Instant,
         asOf: Instant,
         activeVersionByKey: Map<String, Int>,
-    ): ReasonCode {
-        if (!rule.isPublishedAsOf(asOf)) return ReasonCode.NOT_PUBLISHED_AS_OF
-        if (!rule.scope.matches(facility)) return ReasonCode.SCOPE_MISMATCH
+    ): Pair<ReasonCode, TraceBreakdown> {
+        val visibility = if (rule.isPublishedAsOf(asOf)) Visibility.VISIBLE else Visibility.NOT_PUBLISHED
+        val scope = if (rule.scope.matches(facility)) ScopeMatch.IN_SCOPE else ScopeMatch.OUT_OF_SCOPE
+        val window = when (rule.validityAt(evaluatedAt)) {
+            ReasonCode.NOT_YET_EFFECTIVE -> WindowState.NOT_YET_EFFECTIVE
+            ReasonCode.EXPIRED -> WindowState.EXPIRED
+            else -> WindowState.EFFECTIVE
+        }
 
-        val validity = rule.validityAt(evaluatedAt)
-        if (validity != ReasonCode.MATCHED) return validity
-
-        // A newer published+valid version of the same logical rule wins.
+        // Version selection is only meaningful for a revision that is itself
+        // visible + in-scope + in-window. A newer version that is not currently
+        // effective never enters selection, so it cannot retire this one.
+        val eligible = visibility == Visibility.VISIBLE &&
+            scope == ScopeMatch.IN_SCOPE &&
+            window == WindowState.EFFECTIVE
         val activeVersion = activeVersionByKey[rule.ruleKey]
-        if (activeVersion != null && rule.version < activeVersion) {
-            return ReasonCode.SUPERSEDED_BY_NEWER_VERSION
+        val versionSelection = when {
+            !eligible -> VersionSelection.NOT_APPLICABLE
+            activeVersion != null && rule.version < activeVersion -> VersionSelection.SUPERSEDED_BY_NEWER_VERSION
+            else -> VersionSelection.SELECTED
         }
 
-        return when (rule.condition.evaluate(input)) {
-            ConditionOutcome.Satisfied -> ReasonCode.MATCHED
-            ConditionOutcome.NotSatisfied -> ReasonCode.CONDITION_NOT_MET
-            is ConditionOutcome.MissingInput -> ReasonCode.MISSING_INPUT
+        // Condition is evaluated independently, even for non-firing rules, so
+        // the breakdown records whether the threshold held on its own terms.
+        val conditionOutcome = rule.condition.evaluate(input)
+        val conditionState = when (conditionOutcome) {
+            ConditionOutcome.Satisfied -> ConditionState.MET
+            ConditionOutcome.NotSatisfied -> ConditionState.NOT_MET
+            is ConditionOutcome.MissingInput -> ConditionState.MISSING_INPUT
         }
+        val missingMetric = (conditionOutcome as? ConditionOutcome.MissingInput)?.metric?.key
+
+        val breakdown = TraceBreakdown(
+            visibility = visibility,
+            scope = scope,
+            window = window,
+            versionSelection = versionSelection,
+            condition = conditionState,
+            missingMetric = missingMetric,
+            priority = PriorityResolution.DID_NOT_FIRE,
+        )
+
+        // Derive the collapsed effective reason by fixed precedence.
+        val outcome = when {
+            visibility == Visibility.NOT_PUBLISHED -> ReasonCode.NOT_PUBLISHED_AS_OF
+            scope == ScopeMatch.OUT_OF_SCOPE -> ReasonCode.SCOPE_MISMATCH
+            window == WindowState.NOT_YET_EFFECTIVE -> ReasonCode.NOT_YET_EFFECTIVE
+            window == WindowState.EXPIRED -> ReasonCode.EXPIRED
+            versionSelection == VersionSelection.SUPERSEDED_BY_NEWER_VERSION -> ReasonCode.SUPERSEDED_BY_NEWER_VERSION
+            conditionState == ConditionState.MISSING_INPUT -> ReasonCode.MISSING_INPUT
+            conditionState == ConditionState.NOT_MET -> ReasonCode.CONDITION_NOT_MET
+            else -> ReasonCode.MATCHED
+        }
+        return outcome to breakdown
     }
 
     private fun detailFor(rule: Rule, outcome: ReasonCode): String = when (outcome) {

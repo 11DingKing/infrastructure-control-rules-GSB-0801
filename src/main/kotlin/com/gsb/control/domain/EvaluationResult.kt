@@ -17,6 +17,12 @@ data class RuleTrace(
     /** True only for the single rule whose action became the decision. */
     val decisive: Boolean,
     val detail: String,
+    /**
+     * Per-dimension breakdown (visibility, scope, effective window, version
+     * selection, condition, priority adjudication) computed independently of
+     * the collapsed [outcome]. Lets an audit see each factor on its own.
+     */
+    val breakdown: TraceBreakdown,
 )
 
 /**
@@ -71,5 +77,97 @@ data class EvaluationResult(
                 .append(if (t.decisive) "DECISIVE" else "-")
                 .append('\n')
         }
+    }
+
+    /**
+     * A canonical JSON rendering of the full result, including each trace line's
+     * independent [TraceBreakdown]. Object keys are emitted in a fixed order and
+     * the trace is already in the evaluator's deterministic order, so the output
+     * is byte-identical regardless of the order rules were supplied in. This is
+     * the stable source for [contentHash].
+     */
+    fun canonicalJson(): String = buildString {
+        append('{')
+        appendKey("facilityId"); appendStr(facilityId); append(',')
+        appendKey("decision"); appendNullableStr(decision?.name); append(',')
+        appendKey("decidingLayer"); appendNullableStr(decidingLayer?.name); append(',')
+        appendKey("decidingVersionRef"); appendNullableStr(decidingVersionRef); append(',')
+        appendKey("evaluatedAt"); appendStr(evaluatedAt.toString()); append(',')
+        appendKey("asOf"); appendStr(asOf.toString()); append(',')
+        appendKey("input"); append(inputJson()); append(',')
+        appendKey("firedVersionRefs")
+        append('[')
+        firedVersionRefs.forEachIndexed { i, ref ->
+            if (i > 0) append(',')
+            appendStr(ref)
+        }
+        append(']'); append(',')
+        appendKey("trace")
+        append('[')
+        trace.forEachIndexed { i, t ->
+            if (i > 0) append(',')
+            append(traceJson(t))
+        }
+        append(']')
+        append('}')
+    }
+
+    /** Deterministic SHA-256 over [canonicalJson]; stable and reorder-invariant. */
+    val contentHash: String get() = Hashing.sha256Hex(canonicalJson())
+
+    private fun inputJson(): String = buildString {
+        append('{')
+        input.values.entries.sortedBy { it.key.key }.forEachIndexed { i, (metric, value) ->
+            if (i > 0) append(',')
+            appendKey(metric.key)
+            append(RiskInput.canonicalDouble(value))
+        }
+        append('}')
+    }
+
+    private fun traceJson(t: RuleTrace): String = buildString {
+        val b = t.breakdown
+        append('{')
+        appendKey("versionRef"); appendStr(t.versionRef); append(',')
+        appendKey("ruleKey"); appendStr(t.ruleKey); append(',')
+        appendKey("version"); append(t.version.toString()); append(',')
+        appendKey("layer"); appendStr(t.layer.name); append(',')
+        appendKey("action"); appendStr(t.action.name); append(',')
+        appendKey("outcome"); appendStr(t.outcome.code); append(',')
+        appendKey("decisive"); append(t.decisive.toString()); append(',')
+        appendKey("breakdown")
+        append('{')
+        appendKey("visibility"); appendStr(b.visibility.name); append(',')
+        appendKey("scope"); appendStr(b.scope.name); append(',')
+        appendKey("window"); appendStr(b.window.name); append(',')
+        appendKey("versionSelection"); appendStr(b.versionSelection.name); append(',')
+        appendKey("condition"); appendStr(b.condition.name); append(',')
+        appendKey("missingMetric"); appendNullableStr(b.missingMetric); append(',')
+        appendKey("priority"); appendStr(b.priority.name)
+        append('}')
+        append('}')
+    }
+
+    private fun StringBuilder.appendKey(key: String) {
+        appendStr(key); append(':')
+    }
+
+    private fun StringBuilder.appendStr(s: String) {
+        append('"')
+        for (c in s) {
+            when (c) {
+                '"' -> append("\\\"")
+                '\\' -> append("\\\\")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                else -> append(c)
+            }
+        }
+        append('"')
+    }
+
+    private fun StringBuilder.appendNullableStr(s: String?) {
+        if (s == null) append("null") else appendStr(s)
     }
 }
