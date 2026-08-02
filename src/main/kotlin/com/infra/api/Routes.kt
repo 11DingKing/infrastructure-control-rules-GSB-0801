@@ -118,6 +118,7 @@ fun Application.configureRoutes(
                 val requestId = req.requestId ?: UUID.randomUUID().toString()
                 val observedAt = req.observedAt ?: now
                 val evaluationTime = req.evaluationTime ?: now
+                val asOf = req.asOf ?: evaluationTime
 
                 val input = RiskInput(
                     facilityId = req.facilityId,
@@ -136,7 +137,8 @@ fun Application.configureRoutes(
                         facility = facility,
                         rules = allRules,
                         input = input,
-                        evaluationTime = evaluationTime
+                        evaluationTime = evaluationTime,
+                        asOf = asOf
                     )
                 )
 
@@ -152,6 +154,7 @@ fun Application.configureRoutes(
                 val req = call.receive<BatchEvaluationRequest>()
                 val now = System.currentTimeMillis()
                 val evaluationTime = req.evaluationTime ?: now
+                val asOf = req.asOf ?: evaluationTime
 
                 val inputs = req.inputs.map { dto ->
                     RiskInput(
@@ -171,7 +174,8 @@ fun Application.configureRoutes(
                     facilities = facilities,
                     rules = allRules,
                     inputs = inputs,
-                    evaluationTime = evaluationTime
+                    evaluationTime = evaluationTime,
+                    asOf = asOf
                 )
 
                 results.forEach { result ->
@@ -210,14 +214,31 @@ fun Application.configureRoutes(
                     HttpStatusCode.BadRequest,
                     ErrorResponse("Missing requestId")
                 )
-                val result = repository.getEvaluationResult(requestId)
-                if (result == null) {
+                val storedResult = repository.getEvaluationResult(requestId)
+                if (storedResult == null) {
                     call.respond(HttpStatusCode.NotFound, ErrorResponse("Result not found", "RESULT_NOT_FOUND"))
+                    return@get
+                }
+
+                val asOfParam = call.request.queryParameters["asOf"]?.toLongOrNull()
+
+                if (asOfParam == null || asOfParam == storedResult.asOf) {
+                    call.respond(ExplanationResponseDto.from(storedResult))
                 } else {
-                    call.respond(ExplanationResponseDto.from(result))
+                    val facility = repository.getFacility(storedResult.facilityId)
+                    val allRules = repository.listAllRules()
+                    val historicalResult = RuleEngine.evaluate(
+                        RuleEngine.EvaluationContext(
+                            facility = facility,
+                            rules = allRules,
+                            input = storedResult.inputSnapshot,
+                            evaluationTime = storedResult.evaluatedAt,
+                            asOf = asOfParam
+                        )
+                    )
+                    call.respond(ExplanationResponseDto.from(historicalResult))
                 }
             }
         }
     }
 }
-

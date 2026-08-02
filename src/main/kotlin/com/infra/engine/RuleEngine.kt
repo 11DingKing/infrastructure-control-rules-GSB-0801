@@ -16,7 +16,8 @@ object RuleEngine {
         val facility: Facility?,
         val rules: List<Rule>,
         val input: RiskInput,
-        val evaluationTime: Long
+        val evaluationTime: Long,
+        val asOf: Long = evaluationTime
     )
 
     private data class RuleChain(
@@ -36,6 +37,7 @@ object RuleEngine {
             return buildResult(
                 input = ctx.input,
                 evaluatedAt = ctx.evaluationTime,
+                asOf = ctx.asOf,
                 finalAction = null,
                 reasonCode = ReasonCode.MISSING_FACILITY,
                 hitRule = null,
@@ -47,13 +49,14 @@ object RuleEngine {
         val visibleRules = ctx.rules
             .filter { rule ->
                 rule.isApplicableTo(facility) &&
-                    rule.publishedAt <= ctx.evaluationTime
+                    rule.publishedAt <= ctx.asOf
             }
 
         if (visibleRules.isEmpty()) {
             return buildResult(
                 input = ctx.input,
                 evaluatedAt = ctx.evaluationTime,
+                asOf = ctx.asOf,
                 finalAction = null,
                 reasonCode = ReasonCode.MISSING_RULES,
                 hitRule = null,
@@ -82,7 +85,13 @@ object RuleEngine {
 
         for (chain in chains) {
             consideredRuleIds.add(chain.ruleId)
-            val selection = selectVersionAndExplain(chain, facility, ctx.input, ctx.evaluationTime)
+            val selection = selectVersionAndExplain(
+                chain = chain,
+                facility = facility,
+                input = ctx.input,
+                evaluationTime = ctx.evaluationTime,
+                asOf = ctx.asOf
+            )
             explanationChain.addAll(selection.entries)
 
             val selected = selection.selected
@@ -122,6 +131,7 @@ object RuleEngine {
         return buildResult(
             input = ctx.input,
             evaluatedAt = ctx.evaluationTime,
+            asOf = ctx.asOf,
             finalAction = hitRule?.action,
             reasonCode = reasonCode,
             hitRule = hitRule,
@@ -134,19 +144,21 @@ object RuleEngine {
         chain: RuleChain,
         facility: Facility,
         input: RiskInput,
-        evaluationTime: Long
+        evaluationTime: Long,
+        asOf: Long
     ): VersionSelection {
         val activeVersions = chain.versions.filter { it.isActiveAt(evaluationTime) }
         val selected = activeVersions.maxByOrNull { it.version }
 
         val entries = chain.versions.map { rule ->
-            val visible = rule.publishedAt <= evaluationTime
+            val visible = rule.publishedAt <= asOf
             val active = rule.isActiveAt(evaluationTime)
             val applicable = rule.isApplicableTo(facility)
             val isSelected = selected != null && rule.id == selected.id && rule.version == selected.version
 
             val selectionReason = when {
-                !visible -> "not yet published at evaluation time (publishedAt=${rule.publishedAt})"
+                !visible ->
+                    "not yet published as of visibility cutoff asOf=$asOf (publishedAt=${rule.publishedAt})"
                 !active && selected != null ->
                     "outside validity window [${rule.validFrom}, ${rule.validTo}); " +
                         "superseded by ${selected.id} v${selected.version}"
@@ -201,7 +213,8 @@ object RuleEngine {
         facilities: List<Facility>,
         rules: List<Rule>,
         inputs: List<RiskInput>,
-        evaluationTime: Long
+        evaluationTime: Long,
+        asOf: Long = evaluationTime
     ): List<EvaluationResult> {
         return inputs.map { input ->
             val facility = facilities.firstOrNull { it.id == input.facilityId }
@@ -210,7 +223,8 @@ object RuleEngine {
                     facility = facility,
                     rules = rules,
                     input = input,
-                    evaluationTime = evaluationTime
+                    evaluationTime = evaluationTime,
+                    asOf = asOf
                 )
             )
         }.sortedWith(compareBy({ it.facilityId }, { it.requestId }))
@@ -219,6 +233,7 @@ object RuleEngine {
     private fun buildResult(
         input: RiskInput,
         evaluatedAt: Long,
+        asOf: Long,
         finalAction: Action?,
         reasonCode: ReasonCode,
         hitRule: Rule?,
@@ -235,6 +250,7 @@ object RuleEngine {
             hitRuleLayer = hitRule?.layer,
             inputSnapshot = input,
             evaluatedAt = evaluatedAt,
+            asOf = asOf,
             consideredRuleIds = consideredRuleIds
         )
 
@@ -248,6 +264,7 @@ object RuleEngine {
             hitRuleLayer = hitRule?.layer,
             inputSnapshot = input,
             evaluatedAt = evaluatedAt,
+            asOf = asOf,
             explanationChain = explanationChain,
             consideredRuleIds = consideredRuleIds,
             resultHash = hash

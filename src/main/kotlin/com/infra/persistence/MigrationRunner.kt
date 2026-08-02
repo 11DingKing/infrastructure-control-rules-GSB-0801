@@ -19,6 +19,9 @@ object MigrationRunner {
         },
         Migration(3, "Create evaluation results table") {
             SchemaUtils.create(EvaluationResultsTable)
+        },
+        Migration(4, "Add as_of column to evaluation results") {
+            SchemaUtils.createMissingTablesAndColumns(EvaluationResultsTable)
         }
     )
 

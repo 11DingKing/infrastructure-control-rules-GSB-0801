@@ -15,11 +15,18 @@ object SeedData {
     private val logger = LoggerFactory.getLogger(javaClass)
 
     private const val BASE_TIME = 0L
-    private val MANUAL_EXPIRES_AT = Instant.parse("2030-01-01T00:00:00Z").toEpochMilli()
+
+    private val MANUAL_CLOSE_EXPIRES_AT = Instant.parse("2026-07-31T23:59:59Z").toEpochMilli()
 
     private val STORM_V2_PUBLISHED_AT = Instant.parse("2026-08-01T03:30:00Z").toEpochMilli()
     private val STORM_V2_VALID_FROM = Instant.parse("2026-08-01T04:00:00Z").toEpochMilli()
     private val STORM_V2_VALID_TO = Instant.parse("2026-08-01T06:00:00Z").toEpochMilli()
+
+    private val TYPHOON_V1_VALID_FROM = Instant.parse("2026-07-31T00:00:00Z").toEpochMilli()
+    private val TYPHOON_V1_VALID_TO = Instant.parse("2026-07-31T12:00:00Z").toEpochMilli()
+    private val TYPHOON_V2_PUBLISHED_AT = Instant.parse("2026-08-01T04:50:00Z").toEpochMilli()
+    private val TYPHOON_V2_VALID_FROM = Instant.parse("2026-08-01T05:00:00Z").toEpochMilli()
+    private val TYPHOON_V2_VALID_TO = Instant.parse("2026-08-01T05:30:00Z").toEpochMilli()
 
     fun seedIfEmpty(repository: Repository) {
         if (repository.getFacility("tunnel-17") != null) {
@@ -139,13 +146,41 @@ object SeedData {
             version = 1,
             publishedAt = BASE_TIME,
             validFrom = BASE_TIME,
-            validTo = MANUAL_EXPIRES_AT,
-            description = "人工强制规则 tunnel-17：无条件关闭，有效期至 2030-01-01"
+            validTo = MANUAL_CLOSE_EXPIRES_AT,
+            description = "人工强制规则 tunnel-17：常规关闭，已于 2026-07-31 到期"
         )
         repository.publishRule(manualCloseRule)
 
+        val typhoonV1 = Rule(
+            id = "manual-tunnel-17-typhoon",
+            layer = RuleLayer.MANUAL,
+            facilityId = "tunnel-17",
+            condition = RuleCondition(),
+            action = Action.CLOSE,
+            version = 1,
+            publishedAt = BASE_TIME,
+            validFrom = TYPHOON_V1_VALID_FROM,
+            validTo = TYPHOON_V1_VALID_TO,
+            description = "人工台风规则 tunnel-17 v1：前一轮台风，已于 2026-07-31 12:00 到期"
+        )
+        repository.publishRule(typhoonV1)
+
+        val typhoonV2 = Rule(
+            id = "manual-tunnel-17-typhoon",
+            layer = RuleLayer.MANUAL,
+            facilityId = "tunnel-17",
+            condition = RuleCondition(),
+            action = Action.CLOSE,
+            version = 2,
+            publishedAt = TYPHOON_V2_PUBLISHED_AT,
+            validFrom = TYPHOON_V2_VALID_FROM,
+            validTo = TYPHOON_V2_VALID_TO,
+            description = "人工台风规则 tunnel-17 v2：2026-08-01 05:00-05:30 台风强制关闭"
+        )
+        repository.publishRule(typhoonV2)
+
         logger.info(
-            "Seed completed: 1 facility, 8 rules (default/region storm v1+v2/region×2/facility×2/manual)"
+            "Seed completed: 1 facility, 10 rules (default/storm v1+v2/region×2/facility×2/manual close/typhoon v1+v2)"
         )
     }
 }

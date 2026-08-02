@@ -53,6 +53,7 @@ object EvaluationResultsTable : Table("evaluation_results") {
     val consideredRuleIdsJson = text("considered_rule_ids_json")
     val resultHash = varchar("result_hash", 128).index()
     val evaluatedAt = long("evaluated_at").index()
+    val asOf = long("as_of")
     val createdAt = timestamp("created_at")
 
     override val primaryKey = PrimaryKey(id)

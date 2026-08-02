@@ -136,13 +136,15 @@ data class RiskInputDto(
     val waterDepthCm: Double? = null,
     val observedAt: Long? = null,
     val requestId: String? = null,
-    val evaluationTime: Long? = null
+    val evaluationTime: Long? = null,
+    val asOf: Long? = null
 )
 
 @Serializable
 data class BatchEvaluationRequest(
     val inputs: List<RiskInputDto>,
-    val evaluationTime: Long? = null
+    val evaluationTime: Long? = null,
+    val asOf: Long? = null
 )
 
 @Serializable
@@ -189,6 +191,7 @@ data class EvaluationResultDto(
     val hitRuleLayer: RuleLayer?,
     val inputSnapshot: RiskInputDto,
     val evaluatedAt: Long,
+    val asOf: Long,
     val explanationChain: List<ExplanationEntryDto>,
     val consideredRuleIds: List<String>,
     val resultHash: String
@@ -211,6 +214,7 @@ data class EvaluationResultDto(
                 requestId = r.inputSnapshot.requestId
             ),
             evaluatedAt = r.evaluatedAt,
+            asOf = r.asOf,
             explanationChain = r.explanationChain.map { ExplanationEntryDto.from(it) },
             consideredRuleIds = r.consideredRuleIds,
             resultHash = r.resultHash
@@ -235,6 +239,7 @@ data class ExplanationResponseDto(
     val hitRuleVersion: Int?,
     val hitRuleLayer: RuleLayer?,
     val evaluatedAt: Long,
+    val asOf: Long,
     val resultHash: String,
     val inputSnapshot: RiskInputDto,
     val explanationChain: List<ExplanationEntryDto>,
@@ -250,6 +255,7 @@ data class ExplanationResponseDto(
             hitRuleVersion = r.hitRuleVersion,
             hitRuleLayer = r.hitRuleLayer,
             evaluatedAt = r.evaluatedAt,
+            asOf = r.asOf,
             resultHash = r.resultHash,
             inputSnapshot = RiskInputDto(
                 facilityId = r.inputSnapshot.facilityId,
@@ -261,7 +267,8 @@ data class ExplanationResponseDto(
             ),
             explanationChain = r.explanationChain.map { ExplanationEntryDto.from(it) },
             summary = buildString {
-                append("Evaluation for facility '${r.facilityId}' at ${r.evaluatedAt}: ")
+                append("Evaluation for facility '${r.facilityId}' at ${r.evaluatedAt} ")
+                append("(asOf=${r.asOf}): ")
                 if (r.finalAction != null) {
                     append("final action = ${r.finalAction}, ")
                     append("hit by rule '${r.hitRuleId}' version ${r.hitRuleVersion} (${r.hitRuleLayer}). ")

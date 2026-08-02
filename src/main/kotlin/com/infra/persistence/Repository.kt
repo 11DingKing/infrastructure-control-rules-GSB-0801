@@ -143,6 +143,7 @@ class Repository {
             it[consideredRuleIdsJson] = json.encodeToString(result.consideredRuleIds)
             it[resultHash] = result.resultHash
             it[evaluatedAt] = result.evaluatedAt
+            it[asOf] = result.asOf
             it[createdAt] = Instant.now()
         }
         result
@@ -163,6 +164,7 @@ class Repository {
                     hitRuleLayer = row[EvaluationResultsTable.hitRuleLayer]?.let { RuleLayer.valueOf(it) },
                     inputSnapshot = json.decodeFromString<RiskInput>(row[EvaluationResultsTable.inputSnapshotJson]),
                     evaluatedAt = row[EvaluationResultsTable.evaluatedAt],
+                    asOf = row[EvaluationResultsTable.asOf],
                     explanationChain = json.decodeFromString<List<ExplanationEntry>>(row[EvaluationResultsTable.explanationChainJson]),
                     consideredRuleIds = json.decodeFromString<List<String>>(row[EvaluationResultsTable.consideredRuleIdsJson]),
                     resultHash = row[EvaluationResultsTable.resultHash]
@@ -189,6 +191,7 @@ class Repository {
                     hitRuleLayer = row[EvaluationResultsTable.hitRuleLayer]?.let { RuleLayer.valueOf(it) },
                     inputSnapshot = json.decodeFromString<RiskInput>(row[EvaluationResultsTable.inputSnapshotJson]),
                     evaluatedAt = row[EvaluationResultsTable.evaluatedAt],
+                    asOf = row[EvaluationResultsTable.asOf],
                     explanationChain = json.decodeFromString<List<ExplanationEntry>>(row[EvaluationResultsTable.explanationChainJson]),
                     consideredRuleIds = json.decodeFromString<List<String>>(row[EvaluationResultsTable.consideredRuleIdsJson]),
                     resultHash = row[EvaluationResultsTable.resultHash]

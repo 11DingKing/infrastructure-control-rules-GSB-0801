@@ -29,6 +29,7 @@ data class EvaluationResult(
     val hitRuleLayer: RuleLayer?,
     val inputSnapshot: RiskInput,
     val evaluatedAt: Long,
+    val asOf: Long,
     val explanationChain: List<ExplanationEntry>,
     val consideredRuleIds: List<String>,
     val resultHash: String
@@ -44,6 +45,7 @@ data class EvaluationResult(
             hitRuleLayer: RuleLayer?,
             inputSnapshot: RiskInput,
             evaluatedAt: Long,
+            asOf: Long,
             consideredRuleIds: List<String>
         ): String {
             val raw = buildString {
@@ -56,6 +58,7 @@ data class EvaluationResult(
                 append(hitRuleLayer?.name ?: "null").append('|')
                 append(inputSnapshot.snapshotKey()).append('|')
                 append(evaluatedAt).append('|')
+                append(asOf).append('|')
                 append(consideredRuleIds.sorted().joinToString(","))
             }
             val bytes = raw.encodeToByteArray()
