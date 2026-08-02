@@ -17,14 +17,22 @@ data class ConditionOutcome(
 )
 
 /**
- * The full, auditable trace of one [Rule] during an evaluation.
+ * The full, auditable trace of one [Rule] version during an evaluation.
  *
- * Every candidate rule produces a [RuleTrace] regardless of whether it ultimately
- * won, so the explanation chain can show not just "why closed" but also "why this
- * other rule did not override".
+ * Every candidate rule version produces a [RuleTrace] regardless of whether it
+ * ultimately won, so the explanation chain can show not just "why closed" but
+ * also "why this other version/rule did not override".
  *
- * @property selected true when this rule's action contributed to the final result
- *   (either it was the outright winner or it was the strictest match in its layer).
+ * Version selection fields:
+ *  - [versionSelected]: this version is the selected representative of its
+ *    [ruleId] chain at the evaluation instant (the highest active version).
+ *  - [supersededByVersion]: when non-null, an older active version was displaced
+ *    by a newer active version of the same [ruleId].
+ *  - [conditionsMet]: always evaluated (even when superseded/window-missed) so the
+ *    chain records what *would* have happened.
+ *
+ * @property selected true when this rule version's action contributed to the final
+ *   result (it matched and was the strictest match in its layer).
  */
 @Serializable
 data class RuleTrace(
@@ -41,6 +49,9 @@ data class RuleTrace(
     val expiresAt: String?,
     val publishedAt: String,
     val conditionOutcomes: List<ConditionOutcome>,
+    val conditionsMet: Boolean,
+    val versionSelected: Boolean,
+    val supersededByVersion: Int? = null,
     val matched: Boolean,
     val selected: Boolean,
     val reasonCode: ReasonCode
@@ -79,6 +90,7 @@ data class EvaluationResult(
     val ruleTraces: List<RuleTrace>,
     val layerDecisions: List<LayerDecision>,
     val inputSnapshot: Map<String, Double>,
+    val contentHash: String,
     val explanation: String
 ) {
     companion object {

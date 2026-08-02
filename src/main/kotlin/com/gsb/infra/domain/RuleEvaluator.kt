@@ -9,14 +9,20 @@ import java.time.Instant
  * "current time" is explicitly passed in as [EvaluationRequest.evaluatedAt] so
  * historical evaluations are reproducible and batch baselines are stable.
  *
- * Determinism guarantees:
- *  - Rules are processed in a stable order (by ruleId, then version).
- *  - The set of rules considered is only those published at [EvaluationRequest.evaluatedAt],
- *    so historical explanations cannot see rules published later.
- *  - Input snapshots are normalised to declaration order.
- *  - Conflict resolution is fixed: MANUAL > FACILITY > REGION > DEFAULT, and within
- *    a layer the strictest action wins. Ties are broken by ruleId/version for
- *    deterministic winner selection.
+ * Determinism & versioning guarantees:
+ *  - Rules are processed in a stable order (layer priority, ruleId, version),
+ *    so a shuffled input list produces an identical result.
+ *  - A rule whose publishedAt is after `at` is traced but cannot match; history
+ *    cannot see rules published later.
+ *  - For each ruleId chain, the **highest version that is active at `at`**
+ *    (published AND within its effective window AND scope/type matching) is the
+ *    selected representative. An older still-active version is marked
+ *    [ReasonCode.SUPERSEDED_BY_NEWER_VERSION] and does not match — but it is NOT
+ *    retired merely because a newer version was published earlier. Until the
+ *    newer version's effective window opens, the older version keeps governing.
+ *  - Conflict resolution is fixed across chains: MANUAL > FACILITY > REGION >
+ *    DEFAULT, and within a layer the strictest action wins. Ties are broken by
+ *    ruleId/version for deterministic winner selection.
  */
 object RuleEvaluator {
 
@@ -30,18 +36,80 @@ object RuleEvaluator {
     fun evaluate(request: EvaluationRequest): EvaluationResult {
         val (facility, rules, input, at) = request
 
-        // History isolation: rules are sorted deterministically. A rule whose
-        // publishedAt is after `at` is still traced (for an auditable explanation
-        // chain) but can never match — see traceRule. This guarantees historical
-        // explanations cannot be influenced by rules published later.
         val orderedRules = rules
             .sortedWith(compareBy({ it.layer.priority }, { it.ruleId }, { it.version }))
 
-        val traces = mutableListOf<RuleTrace>()
-        val layerDecisions = mutableListOf<LayerDecision>()
+        // --- Phase 1: trace every candidate version ------------------------
+        val rawTraces = orderedRules.map { traceRule(it, facility, input, at) }
+        val traceByRuleVersion = rawTraces.associateBy { it.ruleId to it.version }
 
-        // Winner across all layers. Higher layer priority always wins over lower;
-        // within a layer the strictest action wins.
+        // --- Phase 2: version selection per ruleId chain -------------------
+        // A version is "eligible" when it is published, in its effective window,
+        // and its scope/type match this facility. The highest eligible version
+        // is the selected representative of the chain. An older eligible version
+        // is superseded by it.
+        val selectedVersionByRule = HashMap<String, Int>()
+        val superseded = HashMap<Pair<String, Int>, Int>()
+
+        for (ruleId in orderedRules.map { it.ruleId }.distinct()) {
+            val chainTraces = traceByRuleVersion.values
+                .filter { it.ruleId == ruleId }
+                .sortedByDescending { it.version }
+            val selected = chainTraces.firstOrNull { it.versionEligible() }
+            if (selected != null) {
+                selectedVersionByRule[ruleId] = selected.version
+                for (older in chainTraces) {
+                    if (older.version < selected.version && older.versionEligible()) {
+                        superseded[older.ruleId to older.version] = selected.version
+                    }
+                }
+            }
+        }
+
+        // --- Phase 3: finalise traces with version selection ---------------
+        val traces = rawTraces.map { trace ->
+            val selectedVersion = selectedVersionByRule[trace.ruleId]
+            val isSelected = selectedVersion == trace.version
+            val supersededBy = superseded[trace.ruleId to trace.version]
+
+            val matched = isSelected && trace.conditionsMet &&
+                trace.scopeMatched && trace.typeMatched &&
+                trace.alreadyPublished && trace.inEffectiveWindow
+
+            val reasonCode = when {
+                supersededBy != null -> ReasonCode.SUPERSEDED_BY_NEWER_VERSION
+                trace.alreadyPublished && at.isBefore(
+                    Instant.parse(trace.effectiveFrom)
+                ) -> ReasonCode.RULE_NOT_YET_EFFECTIVE
+                !trace.alreadyPublished -> ReasonCode.RULE_NOT_YET_EFFECTIVE
+                trace.expiresAt != null &&
+                    !at.isBefore(Instant.parse(trace.expiresAt)) ->
+                    if (at == Instant.parse(trace.expiresAt)) ReasonCode.RULE_EXPIRED
+                    else ReasonCode.RULE_OUTSIDE_EFFECTIVE_WINDOW
+                !trace.scopeMatched || !trace.typeMatched ->
+                    ReasonCode.OVERRIDDEN_BY_HIGHER_PRIORITY_LAYER
+                !isSelected -> {
+                    // Not selected and not superseded: no eligible version of this
+                    // chain is active (e.g. newer version window has closed). This
+                    // version itself is outside its window too, so use window reason.
+                    trace.reasonCode
+                }
+                !trace.conditionsMet ->
+                    trace.conditionOutcomes.firstOrNull { !it.matched }?.reasonCode
+                        ?: ReasonCode.CONDITION_NOT_MET
+                else -> ReasonCode.RULE_MATCHED
+            }
+
+            trace.copy(
+                versionSelected = isSelected,
+                supersededByVersion = supersededBy,
+                matched = matched,
+                reasonCode = reasonCode
+            )
+        }
+
+        // --- Phase 4: layer conflict resolution ----------------------------
+        val layerDecisions = mutableListOf<LayerDecision>()
         var overallWinner: Rule? = null
         var overallAction = Action.NONE
 
@@ -52,12 +120,9 @@ object RuleEvaluator {
             var layerAction = Action.NONE
 
             for (rule in layerRules) {
-                val trace = traceRule(rule, facility, input, at)
-                traces.add(trace)
+                val trace = traces.first { it.ruleId == rule.ruleId && it.version == rule.version }
                 if (trace.matched) {
                     layerMatched.add(rule)
-                    // Strictest action wins within the layer; on equal severity the
-                    // deterministic ordering (ruleId, version) keeps the first one.
                     if (rule.action.severity > layerAction.severity) {
                         layerAction = rule.action
                         layerWinner = rule
@@ -75,8 +140,6 @@ object RuleEvaluator {
                         matchedRuleIds = layerMatched.map { it.ruleId + "#v" + it.version }
                     )
                 )
-                // Layers are iterated in ascending priority. A matched higher layer
-                // always overrides any lower layer, regardless of action severity.
                 overallWinner = layerWinner
                 overallAction = layerAction
             } else {
@@ -92,7 +155,6 @@ object RuleEvaluator {
             }
         }
 
-        // Mark which traces were selected so the explanation chain is explicit.
         val finalTraces = traces.map { trace ->
             val selected = overallWinner != null &&
                 trace.ruleId == overallWinner.ruleId &&
@@ -109,7 +171,7 @@ object RuleEvaluator {
 
         val orderedSnapshot = input.orderedValues().mapKeys { it.key.key }
 
-        return EvaluationResult(
+        val result = EvaluationResult(
             facilityId = facility.id,
             facilityType = facility.type,
             regionCode = facility.regionCode,
@@ -122,6 +184,7 @@ object RuleEvaluator {
             ruleTraces = finalTraces,
             layerDecisions = layerDecisions,
             inputSnapshot = orderedSnapshot,
+            contentHash = "",
             explanation = buildExplanation(
                 facility = facility,
                 winner = overallWinner,
@@ -130,7 +193,12 @@ object RuleEvaluator {
                 reasonCode = reasonCode
             )
         )
+
+        return result.copy(contentHash = CanonicalHasher.hash(result))
     }
+
+    private fun RuleTrace.versionEligible(): Boolean =
+        alreadyPublished && inEffectiveWindow && scopeMatched && typeMatched
 
     private fun traceRule(
         rule: Rule,
@@ -143,6 +211,9 @@ object RuleEvaluator {
         val alreadyPublished = rule.isPublished(at)
         val inWindow = rule.isInEffectiveWindow(at)
 
+        val conditionOutcomes = rule.conditions.map { evaluateCondition(it, input) }
+        val conditionsMet = conditionOutcomes.all { it.matched }
+
         val windowReason = when {
             !alreadyPublished -> ReasonCode.RULE_NOT_YET_EFFECTIVE
             at.isBefore(rule.effectiveFrom) -> ReasonCode.RULE_NOT_YET_EFFECTIVE
@@ -152,13 +223,7 @@ object RuleEvaluator {
             else -> ReasonCode.RULE_MATCHED
         }
 
-        val conditionOutcomes = rule.conditions.map { evaluateCondition(it, input) }
-        val conditionsMet = conditionOutcomes.all { it.matched }
-
-        val matched = scopeMatched && typeMatched && alreadyPublished &&
-            inWindow && conditionsMet
-
-        val reasonCode = when {
+        val provisionalReason = when {
             !alreadyPublished -> ReasonCode.RULE_NOT_YET_EFFECTIVE
             at.isBefore(rule.effectiveFrom) -> ReasonCode.RULE_NOT_YET_EFFECTIVE
             rule.expiresAt != null && !at.isBefore(rule.expiresAt) -> windowReason
@@ -182,9 +247,12 @@ object RuleEvaluator {
             expiresAt = rule.expiresAt?.toString(),
             publishedAt = rule.publishedAt.toString(),
             conditionOutcomes = conditionOutcomes,
-            matched = matched,
+            conditionsMet = conditionsMet,
+            versionSelected = false,
+            supersededByVersion = null,
+            matched = false,
             selected = false,
-            reasonCode = reasonCode
+            reasonCode = provisionalReason
         )
     }
 

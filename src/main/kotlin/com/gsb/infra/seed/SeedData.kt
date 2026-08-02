@@ -96,10 +96,14 @@ object SeedData {
             )
         )
 
-        // REGION 440800: stricter rain thresholds for the region.
+        // REGION 440800: storm control chain.
+        // v1: 60mm threshold, baseline (no expiry).
+        // v2: 75mm threshold, published 2026-08-01T03:30Z, effective [04:00,06:00).
+        //     v1 keeps governing until v2's window opens; once it closes the chain
+        //     falls back to v1 again.
         service.publishRule(
             Rule(
-                ruleId = "region-440800-rain-restrict",
+                ruleId = "region-440800-storm",
                 version = 1,
                 layer = RuleLayer.REGION,
                 facilityId = null,
@@ -113,6 +117,24 @@ object SeedData {
                 effectiveFrom = effectiveFrom,
                 expiresAt = null,
                 publishedAt = publishedAt
+            )
+        )
+        service.publishRule(
+            Rule(
+                ruleId = "region-440800-storm",
+                version = 2,
+                layer = RuleLayer.REGION,
+                facilityId = null,
+                regionCode = "440800",
+                facilityTypes = setOf(FacilityType.TUNNEL, FacilityType.WATER_SECTION),
+                conditions = listOf(
+                    Condition(Metric.HOURLY_PRECIPITATION_MM, Operator.GTE, 75.0)
+                ),
+                action = Action.RESTRICT,
+                reason = "区域 440800：暴雨橙色预警，阈值上调至 75mm 限行",
+                effectiveFrom = Instant.parse("2026-08-01T04:00:00Z"),
+                expiresAt = Instant.parse("2026-08-01T06:00:00Z"),
+                publishedAt = Instant.parse("2026-08-01T03:30:00Z")
             )
         )
         service.publishRule(
