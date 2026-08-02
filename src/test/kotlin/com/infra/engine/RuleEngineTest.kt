@@ -323,7 +323,8 @@ class RuleEngineTest {
         val manualEntry = result.explanationChain.first { it.ruleId == "manual-expired" }
         assertEquals(false, manualEntry.matched)
         assertEquals(false, manualEntry.activeAtEvaluationTime)
-        assertTrue(manualEntry.reasons.any { it.contains("not active") })
+        assertEquals(false, manualEntry.selectedAsActiveVersion)
+        assertTrue(manualEntry.versionSelectionReason.contains("outside validity window"))
     }
 
     data class MissingInputTestCase(

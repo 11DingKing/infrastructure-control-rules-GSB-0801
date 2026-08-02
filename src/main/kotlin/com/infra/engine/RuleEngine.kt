@@ -19,6 +19,17 @@ object RuleEngine {
         val evaluationTime: Long
     )
 
+    private data class RuleChain(
+        val ruleId: String,
+        val layer: RuleLayer,
+        val versions: List<Rule>
+    )
+
+    private data class VersionSelection(
+        val selected: Rule?,
+        val entries: List<ExplanationEntry>
+    )
+
     fun evaluate(ctx: EvaluationContext): EvaluationResult {
         val facility = ctx.facility
         if (facility == null) {
@@ -33,18 +44,13 @@ object RuleEngine {
             )
         }
 
-        val applicableRules = ctx.rules
+        val visibleRules = ctx.rules
             .filter { rule ->
                 rule.isApplicableTo(facility) &&
                     rule.publishedAt <= ctx.evaluationTime
             }
-            .sortedWith(
-                compareByDescending<Rule> { it.layer.priority }
-                    .thenByDescending { it.version }
-                    .thenBy { it.id }
-            )
 
-        if (applicableRules.isEmpty()) {
+        if (visibleRules.isEmpty()) {
             return buildResult(
                 input = ctx.input,
                 evaluatedAt = ctx.evaluationTime,
@@ -56,49 +62,46 @@ object RuleEngine {
             )
         }
 
-        val explanationChain = mutableListOf<ExplanationEntry>()
-        val matchedByLayer = linkedMapOf<RuleLayer, Rule>()
-
-        for (rule in applicableRules) {
-            val active = rule.isActiveAt(ctx.evaluationTime)
-            val applicable = rule.isApplicableTo(facility)
-            val conditionMatch = rule.condition.matches(ctx.input)
-
-            val matched = active && applicable && conditionMatch is ConditionMatch.Matched
-
-            val reasons = when (conditionMatch) {
-                is ConditionMatch.Matched -> emptyList()
-                is ConditionMatch.NotMatched -> conditionMatch.reasons
-            }.toMutableList()
-
-            if (!active) {
-                reasons.add("rule not active at evaluation time (validFrom=${rule.validFrom}, validTo=${rule.validTo}, publishedAt=${rule.publishedAt})")
-            }
-            if (!applicable) {
-                reasons.add("rule not applicable to facility")
-            }
-
-            explanationChain.add(
-                ExplanationEntry(
-                    ruleId = rule.id,
-                    layer = rule.layer,
-                    version = rule.version,
-                    action = rule.action,
-                    matched = matched,
-                    activeAtEvaluationTime = active,
-                    applicableToFacility = applicable,
-                    reasons = reasons,
-                    description = rule.description
+        val chains = visibleRules
+            .groupBy { it.id }
+            .map { (ruleId, versions) ->
+                RuleChain(
+                    ruleId = ruleId,
+                    layer = versions.first().layer,
+                    versions = versions.sortedByDescending { it.version }
                 )
+            }
+            .sortedWith(
+                compareByDescending<RuleChain> { it.layer.priority }
+                    .thenBy { it.ruleId }
             )
 
-            if (matched) {
-                val existing = matchedByLayer[rule.layer]
-                if (existing == null || rule.action.severity > existing.action.severity) {
-                    matchedByLayer[rule.layer] = rule
+        val explanationChain = mutableListOf<ExplanationEntry>()
+        val matchedByLayer = linkedMapOf<RuleLayer, Rule>()
+        val consideredRuleIds = sortedSetOf<String>()
+
+        for (chain in chains) {
+            consideredRuleIds.add(chain.ruleId)
+            val selection = selectVersionAndExplain(chain, facility, ctx.input, ctx.evaluationTime)
+            explanationChain.addAll(selection.entries)
+
+            val selected = selection.selected
+            if (selected != null) {
+                val conditionMatch = selected.condition.matches(ctx.input)
+                if (conditionMatch is ConditionMatch.Matched) {
+                    val existing = matchedByLayer[chain.layer]
+                    if (existing == null || selected.action.severity > existing.action.severity) {
+                        matchedByLayer[chain.layer] = selected
+                    }
                 }
             }
         }
+
+        val sortedChain = explanationChain.sortedWith(
+            compareByDescending<ExplanationEntry> { it.layer.priority }
+                .thenBy { it.ruleId }
+                .thenByDescending { it.version }
+        )
 
         val layersInPriority = RuleLayer.entries.sortedByDescending { it.priority }
         var hitRule: Rule? = null
@@ -122,9 +125,76 @@ object RuleEngine {
             finalAction = hitRule?.action,
             reasonCode = reasonCode,
             hitRule = hitRule,
-            explanationChain = explanationChain,
-            consideredRuleIds = applicableRules.map { it.id }
+            explanationChain = sortedChain,
+            consideredRuleIds = consideredRuleIds.toList()
         )
+    }
+
+    private fun selectVersionAndExplain(
+        chain: RuleChain,
+        facility: Facility,
+        input: RiskInput,
+        evaluationTime: Long
+    ): VersionSelection {
+        val activeVersions = chain.versions.filter { it.isActiveAt(evaluationTime) }
+        val selected = activeVersions.maxByOrNull { it.version }
+
+        val entries = chain.versions.map { rule ->
+            val visible = rule.publishedAt <= evaluationTime
+            val active = rule.isActiveAt(evaluationTime)
+            val applicable = rule.isApplicableTo(facility)
+            val isSelected = selected != null && rule.id == selected.id && rule.version == selected.version
+
+            val selectionReason = when {
+                !visible -> "not yet published at evaluation time (publishedAt=${rule.publishedAt})"
+                !active && selected != null ->
+                    "outside validity window [${rule.validFrom}, ${rule.validTo}); " +
+                        "superseded by ${selected.id} v${selected.version}"
+                !active && selected == null ->
+                    "outside validity window [${rule.validFrom}, ${rule.validTo}); no active version in chain"
+                isSelected ->
+                    "selected as active version (highest version=${rule.version} within validity window)"
+                active && selected != null && rule.version < selected.version ->
+                    "active but superseded by higher version ${selected.version}"
+                else -> "not selected"
+            }
+
+            val reasons = mutableListOf<String>()
+
+            if (isSelected) {
+                when (val match = rule.condition.matches(input)) {
+                    is ConditionMatch.Matched -> Unit
+                    is ConditionMatch.NotMatched -> reasons.addAll(match.reasons)
+                }
+            } else {
+                reasons.add("version not selected; condition not evaluated for decision")
+            }
+
+            if (!applicable) {
+                reasons.add("rule not applicable to facility")
+            }
+
+            val conditionMatches = isSelected &&
+                rule.condition.matches(input) is ConditionMatch.Matched &&
+                applicable
+
+            ExplanationEntry(
+                ruleId = rule.id,
+                layer = rule.layer,
+                version = rule.version,
+                action = rule.action,
+                matched = conditionMatches,
+                visibleAtEvaluation = visible,
+                activeAtEvaluationTime = active,
+                applicableToFacility = applicable,
+                selectedAsActiveVersion = isSelected,
+                versionSelectionReason = selectionReason,
+                reasons = reasons,
+                description = rule.description
+            )
+        }
+
+        return VersionSelection(selected, entries)
     }
 
     fun evaluateBatch(

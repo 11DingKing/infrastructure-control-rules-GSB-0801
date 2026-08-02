@@ -152,8 +152,11 @@ data class ExplanationEntryDto(
     val version: Int,
     val action: Action,
     val matched: Boolean,
+    val visibleAtEvaluation: Boolean,
     val activeAtEvaluationTime: Boolean,
     val applicableToFacility: Boolean,
+    val selectedAsActiveVersion: Boolean,
+    val versionSelectionReason: String,
     val reasons: List<String>,
     val description: String
 ) {
@@ -164,8 +167,11 @@ data class ExplanationEntryDto(
             version = e.version,
             action = e.action,
             matched = e.matched,
+            visibleAtEvaluation = e.visibleAtEvaluation,
             activeAtEvaluationTime = e.activeAtEvaluationTime,
             applicableToFacility = e.applicableToFacility,
+            selectedAsActiveVersion = e.selectedAsActiveVersion,
+            versionSelectionReason = e.versionSelectionReason,
             reasons = e.reasons,
             description = e.description
         )

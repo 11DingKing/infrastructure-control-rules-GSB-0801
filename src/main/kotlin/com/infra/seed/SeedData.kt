@@ -8,13 +8,18 @@ import com.infra.domain.RuleCondition
 import com.infra.domain.RuleLayer
 import com.infra.persistence.Repository
 import org.slf4j.LoggerFactory
+import java.time.Instant
 
 object SeedData {
 
     private val logger = LoggerFactory.getLogger(javaClass)
 
     private const val BASE_TIME = 0L
-    private val MANUAL_EXPIRES_AT = 1893456000000L
+    private val MANUAL_EXPIRES_AT = Instant.parse("2030-01-01T00:00:00Z").toEpochMilli()
+
+    private val STORM_V2_PUBLISHED_AT = Instant.parse("2026-08-01T03:30:00Z").toEpochMilli()
+    private val STORM_V2_VALID_FROM = Instant.parse("2026-08-01T04:00:00Z").toEpochMilli()
+    private val STORM_V2_VALID_TO = Instant.parse("2026-08-01T06:00:00Z").toEpochMilli()
 
     fun seedIfEmpty(repository: Repository) {
         if (repository.getFacility("tunnel-17") != null) {
@@ -45,6 +50,33 @@ object SeedData {
             description = "默认规则：隧道小时降水≥50mm 触发监控"
         )
         repository.publishRule(defaultRule)
+
+        val regionStormV1 = Rule(
+            id = "region-440800-storm",
+            layer = RuleLayer.REGION,
+            regionCode = "440800",
+            condition = RuleCondition(minRainfallMm = 60.0),
+            action = Action.RESTRICT,
+            version = 1,
+            publishedAt = BASE_TIME,
+            validFrom = BASE_TIME,
+            description = "区域规则 440800 暴雨 v1：小时降水≥60mm 触发管制"
+        )
+        repository.publishRule(regionStormV1)
+
+        val regionStormV2 = Rule(
+            id = "region-440800-storm",
+            layer = RuleLayer.REGION,
+            regionCode = "440800",
+            condition = RuleCondition(minRainfallMm = 75.0),
+            action = Action.RESTRICT,
+            version = 2,
+            publishedAt = STORM_V2_PUBLISHED_AT,
+            validFrom = STORM_V2_VALID_FROM,
+            validTo = STORM_V2_VALID_TO,
+            description = "区域规则 440800 暴雨 v2：2026-08-01 04:00-06:00 临时上调阈值至 75mm"
+        )
+        repository.publishRule(regionStormV2)
 
         val regionRainWindRule = Rule(
             id = "region-440800-rain-wind",
@@ -112,6 +144,8 @@ object SeedData {
         )
         repository.publishRule(manualCloseRule)
 
-        logger.info("Seed completed: 1 facility, 6 rules (default/region×2/facility×2/manual)")
+        logger.info(
+            "Seed completed: 1 facility, 8 rules (default/region storm v1+v2/region×2/facility×2/manual)"
+        )
     }
 }

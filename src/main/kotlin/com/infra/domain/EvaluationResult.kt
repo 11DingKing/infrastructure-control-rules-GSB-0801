@@ -9,8 +9,11 @@ data class ExplanationEntry(
     val version: Int,
     val action: Action,
     val matched: Boolean,
+    val visibleAtEvaluation: Boolean,
     val activeAtEvaluationTime: Boolean,
     val applicableToFacility: Boolean,
+    val selectedAsActiveVersion: Boolean,
+    val versionSelectionReason: String,
     val reasons: List<String>,
     val description: String
 )
