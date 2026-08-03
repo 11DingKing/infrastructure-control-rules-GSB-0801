@@ -52,6 +52,7 @@ object EvaluationResultsTable : IntIdTable("evaluation_results") {
     val facilityType = varchar("facility_type", 32)
     val regionCode = varchar("region_code", 16)
     val evaluatedAt = timestamp("evaluated_at")
+    val asOf = timestamp("as_of")
     val finalAction = varchar("final_action", 16)
     val winningRuleId = varchar("winning_rule_id", 64).nullable()
     val winningVersion = integer("winning_version").nullable()

@@ -30,17 +30,27 @@ object RuleEvaluator {
         val facility: Facility,
         val rules: List<Rule>,
         val input: RiskInput,
-        val evaluatedAt: Instant
+        val evaluatedAt: Instant,
+        /**
+         * Visibility cutoff. A rule published after [asOf] is not considered
+         * visible and cannot match or be selected, even if [evaluatedAt] is later.
+         * This is what powers point-in-time historical queries: "as of 04:45,
+         * replay 05:15" must not see a rule published at 04:50.
+         *
+         * Defaults to [evaluatedAt] (a normal live evaluation sees everything
+         * published by the evaluation instant).
+         */
+        val asOf: Instant = evaluatedAt
     )
 
     fun evaluate(request: EvaluationRequest): EvaluationResult {
-        val (facility, rules, input, at) = request
+        val (facility, rules, input, at, asOf) = request
 
         val orderedRules = rules
             .sortedWith(compareBy({ it.layer.priority }, { it.ruleId }, { it.version }))
 
         // --- Phase 1: trace every candidate version ------------------------
-        val rawTraces = orderedRules.map { traceRule(it, facility, input, at) }
+        val rawTraces = orderedRules.map { traceRule(it, facility, input, at, asOf) }
         val traceByRuleVersion = rawTraces.associateBy { it.ruleId to it.version }
 
         // --- Phase 2: version selection per ruleId chain -------------------
@@ -78,10 +88,9 @@ object RuleEvaluator {
 
             val reasonCode = when {
                 supersededBy != null -> ReasonCode.SUPERSEDED_BY_NEWER_VERSION
-                trace.alreadyPublished && at.isBefore(
-                    Instant.parse(trace.effectiveFrom)
-                ) -> ReasonCode.RULE_NOT_YET_EFFECTIVE
-                !trace.alreadyPublished -> ReasonCode.RULE_NOT_YET_EFFECTIVE
+                !trace.alreadyPublished -> ReasonCode.RULE_NOT_YET_PUBLISHED
+                at.isBefore(Instant.parse(trace.effectiveFrom)) ->
+                    ReasonCode.RULE_NOT_YET_EFFECTIVE
                 trace.expiresAt != null &&
                     !at.isBefore(Instant.parse(trace.expiresAt)) ->
                     if (at == Instant.parse(trace.expiresAt)) ReasonCode.RULE_EXPIRED
@@ -176,6 +185,7 @@ object RuleEvaluator {
             facilityType = facility.type,
             regionCode = facility.regionCode,
             evaluatedAt = at.toString(),
+            asOf = asOf.toString(),
             finalAction = overallAction,
             winningRuleId = overallWinner?.ruleId,
             winningVersion = overallWinner?.version,
@@ -190,6 +200,7 @@ object RuleEvaluator {
                 winner = overallWinner,
                 action = overallAction,
                 at = at,
+                asOf = asOf,
                 reasonCode = reasonCode
             )
         )
@@ -204,29 +215,25 @@ object RuleEvaluator {
         rule: Rule,
         facility: Facility,
         input: RiskInput,
-        at: Instant
+        at: Instant,
+        asOf: Instant
     ): RuleTrace {
         val scopeMatched = rule.scopeMatches(facility)
         val typeMatched = rule.typeMatches(facility)
-        val alreadyPublished = rule.isPublished(at)
+        // Visibility is governed by asOf (the point-in-time query cutoff), while
+        // the effective window is governed by evaluatedAt. These can differ.
+        val alreadyPublished = rule.isPublished(asOf)
         val inWindow = rule.isInEffectiveWindow(at)
 
         val conditionOutcomes = rule.conditions.map { evaluateCondition(it, input) }
         val conditionsMet = conditionOutcomes.all { it.matched }
 
-        val windowReason = when {
-            !alreadyPublished -> ReasonCode.RULE_NOT_YET_EFFECTIVE
+        val provisionalReason = when {
+            !alreadyPublished -> ReasonCode.RULE_NOT_YET_PUBLISHED
             at.isBefore(rule.effectiveFrom) -> ReasonCode.RULE_NOT_YET_EFFECTIVE
             rule.expiresAt != null && !at.isBefore(rule.expiresAt) ->
                 if (at == rule.expiresAt) ReasonCode.RULE_EXPIRED
                 else ReasonCode.RULE_OUTSIDE_EFFECTIVE_WINDOW
-            else -> ReasonCode.RULE_MATCHED
-        }
-
-        val provisionalReason = when {
-            !alreadyPublished -> ReasonCode.RULE_NOT_YET_EFFECTIVE
-            at.isBefore(rule.effectiveFrom) -> ReasonCode.RULE_NOT_YET_EFFECTIVE
-            rule.expiresAt != null && !at.isBefore(rule.expiresAt) -> windowReason
             !scopeMatched || !typeMatched -> ReasonCode.OVERRIDDEN_BY_HIGHER_PRIORITY_LAYER
             !conditionsMet -> conditionOutcomes.firstOrNull { !it.matched }?.reasonCode
                 ?: ReasonCode.CONDITION_NOT_MET
@@ -246,6 +253,7 @@ object RuleEvaluator {
             effectiveFrom = rule.effectiveFrom.toString(),
             expiresAt = rule.expiresAt?.toString(),
             publishedAt = rule.publishedAt.toString(),
+            asOf = asOf.toString(),
             conditionOutcomes = conditionOutcomes,
             conditionsMet = conditionsMet,
             versionSelected = false,
@@ -288,13 +296,17 @@ object RuleEvaluator {
         winner: Rule?,
         action: Action,
         at: Instant,
+        asOf: Instant,
         reasonCode: ReasonCode
-    ): String = if (winner != null) {
-        "Facility ${facility.id} (${facility.type}, region ${facility.regionCode}) " +
-            "evaluated at $at: action=$action from layer ${winner.layer} " +
-            "rule ${winner.ruleId} v${winner.version} (${winner.reason})."
-    } else {
-        "Facility ${facility.id} (${facility.type}, region ${facility.regionCode}) " +
-            "evaluated at $at: no active rule matched ($reasonCode); action=$action."
+    ): String {
+        val asOfClause = if (asOf != at) " (as of $asOf)" else ""
+        return if (winner != null) {
+            "Facility ${facility.id} (${facility.type}, region ${facility.regionCode}) " +
+                "evaluated at $at$asOfClause: action=$action from layer ${winner.layer} " +
+                "rule ${winner.ruleId} v${winner.version} (${winner.reason})."
+        } else {
+            "Facility ${facility.id} (${facility.type}, region ${facility.regionCode}) " +
+                "evaluated at $at$asOfClause: no active rule matched ($reasonCode); action=$action."
+        }
     }
 }

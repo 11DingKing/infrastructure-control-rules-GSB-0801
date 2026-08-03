@@ -41,6 +41,7 @@ class EvaluationRepository(private val clock: Clock = Clock.systemUTC()) {
             it[EvaluationResultsTable.facilityType] = result.facilityType.name
             it[EvaluationResultsTable.regionCode] = result.regionCode
             it[EvaluationResultsTable.evaluatedAt] = Instant.parse(result.evaluatedAt)
+            it[EvaluationResultsTable.asOf] = Instant.parse(result.asOf)
             it[EvaluationResultsTable.finalAction] = result.finalAction.name
             it[EvaluationResultsTable.winningRuleId] = result.winningRuleId
             it[EvaluationResultsTable.winningVersion] = result.winningVersion

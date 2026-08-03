@@ -17,8 +17,9 @@ fun Route.evaluationRoutes(service: ControlService) {
             val req = call.receive<EvaluateRequest>()
             val input = RiskInputParser.parse(req.values)
             val at = req.evaluatedAt?.let { Instant.parse(it) } ?: Instant.now()
+            val asOf = req.asOf?.let { Instant.parse(it) } ?: at
             val stored = try {
-                service.evaluate(req.facilityId, input, at)
+                service.evaluate(req.facilityId, input, at, asOf)
             } catch (e: FacilityNotFoundException) {
                 call.respond(
                     HttpStatusCode.NotFound,
@@ -33,8 +34,9 @@ fun Route.evaluationRoutes(service: ControlService) {
             val req = call.receive<BatchEvaluateRequest>()
             val input = RiskInputParser.parse(req.values)
             val at = req.evaluatedAt?.let { Instant.parse(it) } ?: Instant.now()
+            val asOf = req.asOf?.let { Instant.parse(it) } ?: at
             val results = try {
-                service.evaluateBatch(req.facilityIds, input, at)
+                service.evaluateBatch(req.facilityIds, input, at, asOf)
             } catch (e: FacilityNotFoundException) {
                 call.respond(
                     HttpStatusCode.NotFound,

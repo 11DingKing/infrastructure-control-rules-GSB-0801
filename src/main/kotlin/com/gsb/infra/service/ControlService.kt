@@ -81,7 +81,8 @@ class ControlService(
     fun evaluate(
         facilityId: String,
         input: RiskInput,
-        evaluatedAt: Instant = Instant.now(clock)
+        evaluatedAt: Instant = Instant.now(clock),
+        asOf: Instant = evaluatedAt
     ): StoredEvaluation {
         val facility = facilityRepository.findById(facilityId)
             ?: throw FacilityNotFoundException(facilityId)
@@ -92,7 +93,8 @@ class ControlService(
                 facility = facility,
                 rules = rules,
                 input = input,
-                evaluatedAt = evaluatedAt
+                evaluatedAt = evaluatedAt,
+                asOf = asOf
             )
         )
 
@@ -110,9 +112,10 @@ class ControlService(
     fun evaluateBatch(
         facilityIds: List<String>,
         input: RiskInput,
-        evaluatedAt: Instant = Instant.now(clock)
+        evaluatedAt: Instant = Instant.now(clock),
+        asOf: Instant = evaluatedAt
     ): List<StoredEvaluation> {
-        return facilityIds.map { evaluate(it, input, evaluatedAt) }
+        return facilityIds.map { evaluate(it, input, evaluatedAt, asOf) }
     }
 
     fun findResult(id: Long): StoredEvaluation? = evaluationRepository.findById(id)

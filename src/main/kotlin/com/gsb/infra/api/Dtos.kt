@@ -107,14 +107,16 @@ data class RuleDto(
 data class EvaluateRequest(
     val facilityId: String,
     val values: Map<String, Double>,
-    val evaluatedAt: String? = null
+    val evaluatedAt: String? = null,
+    val asOf: String? = null
 )
 
 @Serializable
 data class BatchEvaluateRequest(
     val facilityIds: List<String>,
     val values: Map<String, Double>,
-    val evaluatedAt: String? = null
+    val evaluatedAt: String? = null,
+    val asOf: String? = null
 )
 
 @Serializable
@@ -142,7 +144,9 @@ data class ExplanationDto(
     val winningLayer: RuleLayer? = null,
     val reasonCode: ReasonCode,
     val evaluatedAt: String,
+    val asOf: String,
     val inputSnapshot: Map<String, Double>,
+    val contentHash: String,
     val explanation: String,
     val layerDecisions: List<LayerDecision>,
     val ruleTraces: List<RuleTrace>
@@ -157,7 +161,9 @@ data class ExplanationDto(
             winningLayer = result.winningLayer,
             reasonCode = result.reasonCode,
             evaluatedAt = result.evaluatedAt,
+            asOf = result.asOf,
             inputSnapshot = result.inputSnapshot,
+            contentHash = result.contentHash,
             explanation = result.explanation,
             layerDecisions = result.layerDecisions,
             ruleTraces = result.ruleTraces

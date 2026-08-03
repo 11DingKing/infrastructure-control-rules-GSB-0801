@@ -213,5 +213,28 @@ object SeedData {
                 publishedAt = Instant.parse("2026-01-15T00:00:00Z")
             )
         )
+
+        // MANUAL tunnel-17 typhoon override v2: unconditional CLOSE during
+        // [05:00, 05:30) on 2026-08-01. Published at 04:50, so a point-in-time
+        // query with asOf=04:45 must NOT see this version; it stays invisible
+        // to that historical evaluation even though evaluatedAt=05:15 is inside
+        // the window. After 05:30 it expires and control falls back to the
+        // facility/region rule selected in the previous round.
+        service.publishRule(
+            Rule(
+                ruleId = "manual-tunnel-17-typhoon",
+                version = 2,
+                layer = RuleLayer.MANUAL,
+                facilityId = "tunnel-17",
+                regionCode = null,
+                facilityTypes = emptySet(),
+                conditions = emptyList(),
+                action = Action.CLOSE,
+                reason = "人工强制：台风过境，05:00-05:30 关闭 tunnel-17",
+                effectiveFrom = Instant.parse("2026-08-01T05:00:00Z"),
+                expiresAt = Instant.parse("2026-08-01T05:30:00Z"),
+                publishedAt = Instant.parse("2026-08-01T04:50:00Z")
+            )
+        )
     }
 }

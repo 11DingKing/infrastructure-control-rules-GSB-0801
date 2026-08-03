@@ -148,7 +148,8 @@ class RuleEvaluatorTest {
         val result = eval(rules, fullInput, at = baseTime)
         assertEquals(Action.MONITOR, result.finalAction)
         val futureTrace = result.ruleTraces.first { it.ruleId == "future-close" }
-        assertEquals(ReasonCode.RULE_NOT_YET_EFFECTIVE, futureTrace.reasonCode)
+        assertEquals(ReasonCode.RULE_NOT_YET_PUBLISHED, futureTrace.reasonCode)
+        assertEquals(false, futureTrace.alreadyPublished)
     }
 
     @Test
