@@ -1,0 +1,514 @@
+openapi: 3.0.3
+info:
+  title: Infrastructure Control Rules API
+  version: 1.0.0
+  description: |
+    重点设施管控服务：设施、版本化规则、风险输入、无副作用规则求值、结果详情与解释。
+
+    ## 版本选择（回退语义）
+    同 `ruleId` 构成版本链。求值时在 `publishedAt <= asOf` 的可见版本内，
+    先按生效窗口过滤，再取覆盖 `now` 的最高版本；
+    已发布但尚未生效 / 已经过期的高版本不会淘汰仍然有效的低版本（区间外回退低版本）。
+    解释链为每个可见版本记录：SELECTED_EFFECTIVE_VERSION / SUPERSEDED_BY_NEWER_VERSION /
+    NOT_YET_EFFECTIVE / EXPIRED，并给出最终获胜规则。
+
+    ## 冲突裁决
+    固定顺序：人工强制(MANUAL) > 设施专用(FACILITY) > 区域(REGION) > 默认(DEFAULT)；
+    同优先级采用更严格动作：CLOSE > RESTRICT > MONITOR；
+    优先级与动作都相同时按 ruleId 字典序确定性裁决。
+
+    ## 语义约定
+    - 所有时间字段均为 epoch millis。
+    - 求值为纯函数：相同（设施, 规则集, 输入快照, now, asOf）必得字节级一致的 canonical JSON 与 contentHash。
+    - `now`：判定生效窗口；`effectiveFrom <= now < effectiveTo`（now == effectiveTo 视为已过期）。
+    - `asOf`：历史隔离；求值只能看到 `publishedAt <= asOf` 的规则版本，历史解释不会看到后来发布的规则。
+    - 每次结果持久化命中规则版本、输入快照与完整解释链。
+servers:
+  - url: http://localhost:8080
+tags:
+  - name: facilities
+  - name: rules
+  - name: risk-inputs
+  - name: evaluations
+  - name: batches
+  - name: notifications
+paths:
+  /api/facilities:
+    post:
+      tags: [facilities]
+      summary: 登记设施（隧道 / 涉水路段 / 学校 / 临时搭建物）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateFacilityRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FacilityResponse'
+        '409':
+          description: 设施已存在（FACILITY_EXISTS）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/facilities/{id}:
+    get:
+      tags: [facilities]
+      summary: 查询设施
+      parameters:
+        - $ref: '#/components/parameters/FacilityId'
+      responses:
+        '200':
+          description: 设施详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FacilityResponse'
+        '404':
+          description: FACILITY_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/facilities/{id}/evaluations:
+    get:
+      tags: [evaluations]
+      summary: 列出设施的历史求值结果摘要
+      parameters:
+        - $ref: '#/components/parameters/FacilityId'
+      responses:
+        '200':
+          description: 结果摘要列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EvaluationSummary'
+  /api/rules:
+    post:
+      tags: [rules]
+      summary: 发布规则版本
+      description: |
+        (ruleId, version) 唯一。发布失败返回可枚举原因码：
+        EMPTY_CONDITION / INVALID_WINDOW / MISSING_SCOPE_KEY / UNKNOWN_SCOPE_FACILITY（422），
+        DUPLICATE_VERSION / VERSION_ROLLBACK（409，含并发重复发布）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishRuleRequest'
+      responses:
+        '201':
+          description: 发布成功（code=PUBLISHED）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishRuleResponse'
+        '409':
+          description: DUPLICATE_VERSION / VERSION_ROLLBACK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishRuleResponse'
+        '422':
+          description: 校验失败原因码
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishRuleResponse'
+  /api/rules/{ruleId}/versions:
+    get:
+      tags: [rules]
+      summary: 列出规则链的全部版本
+      parameters:
+        - name: ruleId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 版本列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PublishRuleResponse'
+  /api/risk-inputs:
+    post:
+      tags: [risk-inputs]
+      summary: 录入风险输入快照（字段可空表示缺失输入）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRiskInputRequest'
+      responses:
+        '201':
+          description: 已录入
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestRiskInputResponse'
+  /api/evaluations:
+    post:
+      tags: [evaluations]
+      summary: 执行规则求值（无副作用纯函数 + 结果持久化 + 通知消费）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvaluateRequest'
+      responses:
+        '201':
+          description: 求值结果（含命中规则版本、输入快照、完整解释链）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluationResponse'
+        '404':
+          description: FACILITY_NOT_FOUND / INPUT_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: INPUT_FACILITY_MISMATCH
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/evaluations/{id}:
+    get:
+      tags: [evaluations]
+      summary: 查询求值结果详情与解释链
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 结果详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluationResponse'
+        '404':
+          description: EVALUATION_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/batches:
+    post:
+      tags: [batches]
+      summary: 批量求值（与单次求值同路径，不绕过领域层），留下可复现基准数据
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunBatchRequest'
+      responses:
+        '201':
+          description: 批量基准记录（每项内容指纹可复现）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchResponse'
+        '422':
+          description: EMPTY_BATCH
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/batches/{id}:
+    get:
+      tags: [batches]
+      summary: 查询批量基准记录
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 基准记录
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchResponse'
+        '404':
+          description: BATCH_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/notifications:
+    get:
+      tags: [notifications]
+      summary: 查询通知记录（通知只消费求值结果，不参与判定）
+      parameters:
+        - name: facilityId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 通知列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NotificationResponse'
+components:
+  parameters:
+    FacilityId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    CreateFacilityRequest:
+      type: object
+      required: [id, type, region, name]
+      properties:
+        id:
+          type: string
+          example: tunnel-17
+        type:
+          type: string
+          enum: [TUNNEL, FLOOD_ROAD, SCHOOL, TEMP_STRUCTURE]
+        region:
+          type: string
+          example: "440800"
+        name:
+          type: string
+    FacilityResponse:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string }
+        region: { type: string }
+        name: { type: string }
+    PublishRuleRequest:
+      type: object
+      required: [ruleId, version, tier, action, effectiveFrom]
+      properties:
+        ruleId:
+          type: string
+          example: region-440800-storm
+        version:
+          type: integer
+        tier:
+          type: string
+          enum: [DEFAULT, REGION, FACILITY, MANUAL]
+        scopeKey:
+          type: string
+          description: DEFAULT 省略；REGION 为区域编码；FACILITY/MANUAL 为设施 id
+          example: "440800"
+        facilityType:
+          type: string
+          nullable: true
+          enum: [TUNNEL, FLOOD_ROAD, SCHOOL, TEMP_STRUCTURE]
+        precipitationMmAtLeast:
+          type: number
+          nullable: true
+        windLevelAtLeast:
+          type: integer
+          nullable: true
+        waterDepthCmAtLeast:
+          type: number
+          nullable: true
+        action:
+          type: string
+          enum: [MONITOR, RESTRICT, CLOSE]
+        effectiveFrom:
+          type: integer
+          format: int64
+        effectiveTo:
+          type: integer
+          format: int64
+          nullable: true
+          description: 不含边界；null 表示永久有效
+        publishedAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: 可选；显式指定发布时间（历史回放/演示用），缺省为服务器当前时间
+    PublishRuleResponse:
+      type: object
+      properties:
+        code:
+          type: string
+          enum: [PUBLISHED, EMPTY_CONDITION, INVALID_WINDOW, MISSING_SCOPE_KEY, UNKNOWN_SCOPE_FACILITY, DUPLICATE_VERSION, VERSION_ROLLBACK]
+        ruleId: { type: string, nullable: true }
+        version: { type: integer, nullable: true }
+        publishedAt: { type: integer, format: int64, nullable: true }
+    IngestRiskInputRequest:
+      type: object
+      required: [facilityId, observedAt]
+      properties:
+        facilityId: { type: string }
+        observedAt: { type: integer, format: int64 }
+        precipitationMm: { type: number, nullable: true }
+        windLevel: { type: integer, nullable: true }
+        waterDepthCm: { type: number, nullable: true }
+    IngestRiskInputResponse:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+    EvaluateRequest:
+      type: object
+      required: [facilityId, inputId]
+      properties:
+        facilityId: { type: string }
+        inputId: { type: integer, format: int64 }
+        now:
+          type: integer
+          format: int64
+          nullable: true
+          description: 缺省为服务器当前时间
+        asOf:
+          type: integer
+          format: int64
+          nullable: true
+          description: 缺省等于 now；用于历史解释隔离
+    RuleRef:
+      type: object
+      properties:
+        ruleId: { type: string }
+        version: { type: integer }
+        tier: { type: string }
+        scopeKey: { type: string }
+    Fact:
+      type: object
+      properties:
+        key: { type: string }
+        value: { type: string }
+    ExplanationEntry:
+      type: object
+      properties:
+        phase:
+          type: string
+          enum: [VERSION_SELECTION, SCOPE_CHECK, WINDOW_CHECK, CONDITION_CHECK, CONFLICT_RESOLUTION, DECISION]
+        rule:
+          $ref: '#/components/schemas/RuleRef'
+        code:
+          type: string
+          description: 可枚举原因码（EvalCode）
+        facts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Fact'
+    Decision:
+      type: object
+      properties:
+        action: { type: string, enum: [MONITOR, RESTRICT, CLOSE] }
+        tier: { type: string }
+        rule:
+          $ref: '#/components/schemas/RuleRef'
+    RiskSnapshot:
+      type: object
+      properties:
+        facilityId: { type: string }
+        observedAt: { type: integer, format: int64 }
+        precipitationMm: { type: number, nullable: true }
+        windLevel: { type: integer, nullable: true }
+        waterDepthCm: { type: number, nullable: true }
+    EvaluationResult:
+      type: object
+      properties:
+        facilityId: { type: string }
+        input:
+          $ref: '#/components/schemas/RiskSnapshot'
+        now: { type: integer, format: int64 }
+        asOf: { type: integer, format: int64 }
+        decision:
+          $ref: '#/components/schemas/Decision'
+        reasonCodes:
+          type: array
+          items: { type: string }
+        matchedRules:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleRef'
+        explanation:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExplanationEntry'
+    EvaluationResponse:
+      type: object
+      properties:
+        id: { type: string }
+        contentHash:
+          type: string
+          description: canonical JSON 的 SHA-256
+        createdAt: { type: integer, format: int64 }
+        result:
+          $ref: '#/components/schemas/EvaluationResult'
+    EvaluationSummary:
+      type: object
+      properties:
+        id: { type: string }
+        decisionAction: { type: string, nullable: true }
+        decisionRuleId: { type: string, nullable: true }
+        decisionRuleVersion: { type: integer, nullable: true }
+        contentHash: { type: string }
+        createdAt: { type: integer, format: int64 }
+    RunBatchRequest:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvaluateRequest'
+    BatchResponse:
+      type: object
+      properties:
+        id: { type: string }
+        createdAt: { type: integer, format: int64 }
+        itemCount: { type: integer }
+        durationMs: { type: integer, format: int64 }
+        evaluationIds:
+          type: array
+          items: { type: string }
+        contentHashes:
+          type: array
+          items: { type: string }
+          description: 逐项内容指纹，重跑同一请求应完全一致
+    NotificationResponse:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        evaluationId: { type: string }
+        facilityId: { type: string }
+        action: { type: string, nullable: true }
+        channel: { type: string }
+        payload: { type: string }
+        sentAt: { type: integer, format: int64 }
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
