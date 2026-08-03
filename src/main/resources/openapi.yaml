@@ -1,0 +1,300 @@
+openapi: 3.0.3
+info:
+  title: Critical Facility Control-Rules Service
+  version: 0.1.0
+  description: >
+    Explains why a facility is placed under a control action (monitor / restrict
+    / close) and which versioned rule decided it. Rules stack from a default
+    layer up to a manual override layer. Evaluation is a pure, side-effect-free
+    function; persistence and notification only consume its result.
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      summary: Liveness probe
+      responses:
+        "200": { description: OK }
+  /facilities:
+    post:
+      summary: Create or update a facility
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FacilityRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FacilityResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+  /facilities/{id}:
+    get:
+      summary: Get a facility
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FacilityResponse" }
+        "404": { $ref: "#/components/responses/Error" }
+  /facilities/{id}/results:
+    get:
+      summary: List stored evaluation results for a facility
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/EvaluationResponse" }
+  /rules:
+    post:
+      summary: Publish an immutable versioned rule revision
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RuleRequest" }
+      responses:
+        "201":
+          description: Published
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuleResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "409":
+          description: Version conflict (same ruleKey+version already published)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+  /rules/{ruleKey}:
+    get:
+      summary: List all revisions of a logical rule
+      parameters:
+        - { name: ruleKey, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RuleResponse" }
+  /evaluate:
+    post:
+      summary: Evaluate a facility, persist the result and notify consumers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EvaluateRequest" }
+      responses:
+        "200":
+          description: Evaluation result with full explanation chain
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvaluationResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /evaluate/batch:
+    post:
+      summary: Evaluate many inputs through the identical pure path (benchmark baseline)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BatchEvaluateRequest" }
+      responses:
+        "200":
+          description: Batch results plus a reproducible batchDigest
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchEvaluationResponse" }
+  /results/{id}:
+    get:
+      summary: Get a stored evaluation result
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvaluationResponse" }
+        "404": { $ref: "#/components/responses/Error" }
+  /results/{id}/explanation:
+    get:
+      summary: Get only the explanation chain of a stored result
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TraceLine" }
+        "404": { $ref: "#/components/responses/Error" }
+components:
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+  schemas:
+    FacilityRequest:
+      type: object
+      required: [id, kind, regionCode, name]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [tunnel, waterlogged_road, school, temporary_structure] }
+        regionCode: { type: string }
+        name: { type: string }
+    FacilityResponse:
+      allOf: [ { $ref: "#/components/schemas/FacilityRequest" } ]
+    Condition:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, enum: [threshold, always, and, or] }
+        metric: { type: string, enum: [hourly_rainfall_mm, wind_force_level, water_depth_cm] }
+        comparator: { type: string, enum: [GTE, GT, LTE, LT, EQ] }
+        threshold: { type: number }
+        terms:
+          type: array
+          items: { $ref: "#/components/schemas/Condition" }
+    RuleRequest:
+      type: object
+      required: [ruleKey, version, scopeKind, action, condition, validFrom]
+      properties:
+        ruleKey: { type: string }
+        version: { type: integer }
+        scopeKind: { type: string, enum: [global, region, facility, manual] }
+        scopeArg: { type: string, nullable: true }
+        action: { type: string, enum: [MONITOR, RESTRICT, CLOSE] }
+        condition: { $ref: "#/components/schemas/Condition" }
+        validFrom: { type: string, format: date-time }
+        validUntil: { type: string, format: date-time, nullable: true }
+        publishedAt: { type: string, format: date-time, nullable: true }
+        description: { type: string }
+    RuleResponse:
+      type: object
+      properties:
+        ruleKey: { type: string }
+        version: { type: integer }
+        versionRef: { type: string }
+        layer: { type: string, enum: [DEFAULT, REGION, FACILITY, MANUAL] }
+        scopeKind: { type: string }
+        scopeArg: { type: string, nullable: true }
+        action: { type: string }
+        validFrom: { type: string }
+        validUntil: { type: string, nullable: true }
+        publishedAt: { type: string }
+        description: { type: string }
+    EvaluateRequest:
+      type: object
+      required: [facilityId, input]
+      properties:
+        facilityId: { type: string }
+        input:
+          type: object
+          additionalProperties: { type: number }
+        evaluatedAt: { type: string, format: date-time, nullable: true }
+        asOf: { type: string, format: date-time, nullable: true }
+        persist: { type: boolean, default: true }
+        notify: { type: boolean, default: true }
+    BatchEvaluateRequest:
+      type: object
+      required: [facilityId, inputs]
+      properties:
+        facilityId: { type: string }
+        inputs:
+          type: array
+          items:
+            type: object
+            additionalProperties: { type: number }
+        evaluatedAt: { type: string, format: date-time, nullable: true }
+        asOf: { type: string, format: date-time, nullable: true }
+    TraceLine:
+      type: object
+      properties:
+        versionRef: { type: string }
+        ruleKey: { type: string }
+        version: { type: integer }
+        layer: { type: string }
+        action: { type: string }
+        outcome:
+          type: string
+          enum:
+            - MATCHED
+            - NOT_YET_EFFECTIVE
+            - EXPIRED
+            - SCOPE_MISMATCH
+            - MISSING_INPUT
+            - CONDITION_NOT_MET
+            - SUPERSEDED_BY_NEWER_VERSION
+            - NOT_PUBLISHED_AS_OF
+            - SUPERSEDED_BY_HIGHER_LAYER
+            - SUPERSEDED_BY_STRICTER_SIBLING
+        decisive: { type: boolean }
+        detail: { type: string }
+        breakdown: { $ref: "#/components/schemas/TraceBreakdown" }
+    TraceBreakdown:
+      type: object
+      description: Per-dimension breakdown of a rule's fate, computed independently.
+      properties:
+        visibility: { type: string, enum: [VISIBLE, NOT_PUBLISHED] }
+        scope: { type: string, enum: [IN_SCOPE, OUT_OF_SCOPE] }
+        window: { type: string, enum: [NOT_YET_EFFECTIVE, EFFECTIVE, EXPIRED] }
+        versionSelection: { type: string, enum: [SELECTED, SUPERSEDED_BY_NEWER_VERSION, NOT_APPLICABLE] }
+        condition: { type: string, enum: [MET, NOT_MET, MISSING_INPUT] }
+        missingMetric: { type: string, nullable: true }
+        priority:
+          type: string
+          enum: [DECISIVE, SUPERSEDED_BY_HIGHER_LAYER, SUPERSEDED_BY_STRICTER_SIBLING, DID_NOT_FIRE]
+    EvaluationResponse:
+      type: object
+      properties:
+        storedId: { type: integer, nullable: true }
+        facilityId: { type: string }
+        decision: { type: string, nullable: true, enum: [MONITOR, RESTRICT, CLOSE] }
+        decidingLayer: { type: string, nullable: true }
+        decidingVersionRef: { type: string, nullable: true }
+        input:
+          type: object
+          additionalProperties: { type: number }
+        evaluatedAt: { type: string }
+        asOf: { type: string }
+        firedVersionRefs:
+          type: array
+          items: { type: string }
+        canonicalDigest: { type: string, nullable: true }
+        contentHash: { type: string }
+        explanation:
+          type: array
+          items: { $ref: "#/components/schemas/TraceLine" }
+    BatchEvaluationResponse:
+      type: object
+      properties:
+        facilityId: { type: string }
+        count: { type: integer }
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/EvaluationResponse" }
+        batchDigest: { type: string }
+    ErrorResponse:
+      type: object
+      properties:
+        error: { type: string }
+        reason: { type: string }
+        detail: { type: string, nullable: true }
