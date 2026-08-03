@@ -1,0 +1,404 @@
+openapi: 3.0.3
+info:
+  title: Infrastructure Control Rules API
+  description: |
+    Versioned, layered rule evaluation for key infrastructure (tunnels, water
+    sections, schools, temporary structures). Explains *why* a facility was
+    controlled and *which version* of which rule caused it.
+
+    Layering precedence (fixed): MANUAL > FACILITY > REGION > DEFAULT.
+    Within a layer the strictest action (NONE < MONITOR < RESTRICT < CLOSE) wins.
+    Rule evaluation is a pure function; persistence and notifications only
+    consume its result.
+  version: "1.0.0"
+servers:
+  - url: /
+tags:
+  - name: facilities
+  - name: rules
+  - name: evaluations
+paths:
+  /:
+    get:
+      summary: Health check
+      operationId: health
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/facilities:
+    get:
+      tags: [facilities]
+      summary: List facilities
+      operationId: listFacilities
+      responses:
+        '200':
+          description: Facilities
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Facility'
+    post:
+      tags: [facilities]
+      summary: Register or update a facility
+      operationId: upsertFacility
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Facility'
+      responses:
+        '201':
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Facility'
+  /api/facilities/{id}:
+    get:
+      tags: [facilities]
+      summary: Get a facility
+      operationId: getFacility
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Facility
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Facility'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/rules:
+    get:
+      tags: [rules]
+      summary: List all rule versions
+      operationId: listRules
+      responses:
+        '200':
+          description: Rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Rule'
+    post:
+      tags: [rules]
+      summary: Publish a new rule version
+      description: |
+        If `version` is omitted or 0, the next version for the `ruleId` is
+        assigned automatically. A concurrent publish of the same (ruleId,
+        version) returns 409 VERSION_CONFLICT.
+      operationId: publishRule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Rule'
+      responses:
+        '201':
+          description: Published
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Rule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/rules/facility/{facilityId}:
+    get:
+      tags: [rules]
+      summary: List candidate rules for a facility across all layers
+      operationId: listRulesForFacility
+      parameters:
+        - in: path
+          name: facilityId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Candidate rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Rule'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/evaluations:
+    post:
+      tags: [evaluations]
+      summary: Evaluate one facility
+      description: |
+        Runs the pure domain evaluator and persists the result, input snapshot
+        (content-addressed by SHA-256), matched rule version and full
+        explanation chain. Pass `evaluatedAt` (ISO-8601) for historical/
+        reproducible evaluation; only rules published at or before that
+        instant participate.
+      operationId: evaluate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvaluateRequest'
+      responses:
+        '201':
+          description: Evaluation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoredEvaluation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/evaluations/batch:
+    post:
+      tags: [evaluations]
+      summary: Evaluate multiple facilities with the same input and time
+      description: >
+        Each facility goes through the same pure domain path; no domain logic
+        is bypassed for performance.
+      operationId: evaluateBatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchEvaluateRequest'
+      responses:
+        '201':
+          description: Results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StoredEvaluation'
+  /api/evaluations/{id}:
+    get:
+      tags: [evaluations]
+      summary: Get a stored evaluation result
+      operationId: getEvaluation
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoredEvaluation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/evaluations/{id}/explanation:
+    get:
+      tags: [evaluations]
+      summary: Get the human- and machine-readable explanation chain
+      operationId: getExplanation
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Explanation
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/evaluations/facility/{facilityId}/history:
+    get:
+      tags: [evaluations]
+      summary: Historical evaluation results for a facility
+      operationId: history
+      parameters:
+        - in: path
+          name: facilityId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: History
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StoredEvaluation'
+components:
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Version conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        reasonCode:
+          type: string
+        message:
+          type: string
+    Facility:
+      type: object
+      required: [id, type, regionCode, name]
+      properties:
+        id:
+          type: string
+          example: tunnel-17
+        type:
+          type: string
+          enum: [TUNNEL, WATER_SECTION, SCHOOL, TEMPORARY_STRUCTURE]
+        regionCode:
+          type: string
+          example: "440800"
+        name:
+          type: string
+    Condition:
+      type: object
+      required: [metric, operator, threshold]
+      properties:
+        metric:
+          type: string
+          enum: [hourlyPrecipitationMm, windLevel, waterDepthCm]
+        operator:
+          type: string
+          enum: [GTE, GT, LTE, LT, EQ]
+        threshold:
+          type: number
+    Rule:
+      type: object
+      required: [ruleId, layer, conditions, action, reason, effectiveFrom]
+      properties:
+        ruleId:
+          type: string
+        version:
+          type: integer
+          default: 0
+        layer:
+          type: string
+          enum: [DEFAULT, REGION, FACILITY, MANUAL]
+        facilityId:
+          type: string
+          nullable: true
+        regionCode:
+          type: string
+          nullable: true
+        facilityTypes:
+          type: array
+          items:
+            type: string
+        conditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Condition'
+        action:
+          type: string
+          enum: [NONE, MONITOR, RESTRICT, CLOSE]
+        reason:
+          type: string
+        effectiveFrom:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+    EvaluateRequest:
+      type: object
+      required: [facilityId, values]
+      properties:
+        facilityId:
+          type: string
+          example: tunnel-17
+        values:
+          type: object
+          additionalProperties:
+            type: number
+          example:
+            hourlyPrecipitationMm: 72
+            windLevel: 7
+            waterDepthCm: 18
+        evaluatedAt:
+          type: string
+          format: date-time
+          nullable: true
+    BatchEvaluateRequest:
+      type: object
+      required: [facilityIds, values]
+      properties:
+        facilityIds:
+          type: array
+          items:
+            type: string
+        values:
+          type: object
+          additionalProperties:
+            type: number
+        evaluatedAt:
+          type: string
+          format: date-time
+          nullable: true
+    StoredEvaluation:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        snapshotSha256:
+          type: string
+        result:
+          type: object
